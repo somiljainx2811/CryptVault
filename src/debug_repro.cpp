@@ -35,18 +35,18 @@ void Dump(UiApp* app, const char* label) {
 }  // namespace
 
 int main() {
-    appshell::WindowConfig cfg;
+    cryptvault::WindowConfig cfg;
     cfg.title = "repro";
     cfg.width = 400;
     cfg.height = 300;
     cfg.resizable = false;
     cfg.decorated = false;
-    appshell::Window window(cfg);
+    cryptvault::Window window(cfg);
     if (!window.Create()) {
         std::fprintf(stderr, "window create failed\n");
         return 1;
     }
-    appshell::GpuContext gpu;
+    cryptvault::GpuContext gpu;
     uint32_t fb_w = 0, fb_h = 0;
     window.GetFramebufferSize(&fb_w, &fb_h);
     if (!gpu.Create(window.handle(), fb_w, fb_h)) {

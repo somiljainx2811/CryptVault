@@ -8,8 +8,8 @@
 // Keeping this file small means the GPU surface and the immediate-
 // mode UI can each be reasoned about independently.
 
-#ifndef APPSHELL_WINDOW_WINDOW_H
-#define APPSHELL_WINDOW_WINDOW_H
+#ifndef CRYPTVAULT_WINDOW_WINDOW_H
+#define CRYPTVAULT_WINDOW_WINDOW_H
 
 #include <cstdint>
 #include <functional>
@@ -17,7 +17,7 @@
 
 struct GLFWwindow;
 
-namespace appshell {
+namespace cryptvault {
 
 struct WindowConfig {
     std::string title = "App";
@@ -123,6 +123,6 @@ private:
     GLFWwindow* window_ = nullptr;
 };
 
-}  // namespace appshell
+}  // namespace cryptvault
 
-#endif  // APPSHELL_WINDOW_WINDOW_H
+#endif  // CRYPTVAULT_WINDOW_WINDOW_H

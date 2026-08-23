@@ -13,12 +13,12 @@
 // with this header, then feed it into DrawRect/DrawRoundedRect/etc.
 // calls themselves (e.g. Lerp a color's alpha, or a rect's position).
 
-#ifndef APPSHELL_UI_ANIMATION_H
-#define APPSHELL_UI_ANIMATION_H
+#ifndef CRYPTVAULT_UI_ANIMATION_H
+#define CRYPTVAULT_UI_ANIMATION_H
 
 #include <cmath>
 
-namespace appshell {
+namespace cryptvault {
 namespace anim {
 
 // --- suggested durations, by category (see the animation-categories
@@ -199,6 +199,6 @@ struct Timeline {
 };
 
 }  // namespace anim
-}  // namespace appshell
+}  // namespace cryptvault
 
-#endif  // APPSHELL_UI_ANIMATION_H
+#endif  // CRYPTVAULT_UI_ANIMATION_H

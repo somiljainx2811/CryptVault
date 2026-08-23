@@ -22,7 +22,7 @@
 #include <thread>
 #include <chrono>
 
-namespace appshell {
+namespace cryptvault {
 
 namespace {
 
@@ -222,7 +222,7 @@ bool GpuContext::Create(GLFWwindow* window, uint32_t width, uint32_t height) {
 
     WGPUSurfaceDescriptor surface_descriptor{};
     surface_descriptor.nextInChain = reinterpret_cast<WGPUChainedStruct*>(&platform_source);
-    surface_descriptor.label = ToStringView("AppShellSurface");
+    surface_descriptor.label = ToStringView("CryptVaultSurface");
 
     surface_ = wgpuInstanceCreateSurface(instance_, &surface_descriptor);
     if (!surface_) {
@@ -283,12 +283,12 @@ bool GpuContext::Create(GLFWwindow* window, uint32_t width, uint32_t height) {
 
     WGPUDeviceDescriptor device_descriptor{};
     device_descriptor.nextInChain = nullptr;
-    device_descriptor.label = ToStringView("AppShellDevice");
+    device_descriptor.label = ToStringView("CryptVaultDevice");
     device_descriptor.requiredFeatureCount = 0;
     device_descriptor.requiredFeatures = nullptr;
     device_descriptor.requiredLimits = nullptr;
     device_descriptor.defaultQueue.nextInChain = nullptr;
-    device_descriptor.defaultQueue.label = ToStringView("AppShellQueue");
+    device_descriptor.defaultQueue.label = ToStringView("CryptVaultQueue");
     device_descriptor.uncapturedErrorCallbackInfo = error_callback_info;
     // Leave deviceLostCallbackInfo zero-initialized (no callback) -
     // fine to start with; wire it up once you have somewhere real to
@@ -398,7 +398,7 @@ bool GpuContext::RenderFrame(double r, double g, double b, double a,
 
     WGPUTextureViewDescriptor view_descriptor{};
     view_descriptor.nextInChain = nullptr;
-    view_descriptor.label = ToStringView("AppShellFrameView");
+    view_descriptor.label = ToStringView("CryptVaultFrameView");
     view_descriptor.format = surface_format_;
     view_descriptor.dimension = WGPUTextureViewDimension_2D;
     view_descriptor.baseMipLevel = 0;
@@ -421,7 +421,7 @@ bool GpuContext::RenderFrame(double r, double g, double b, double a,
 
     WGPURenderPassDescriptor pass_descriptor{};
     pass_descriptor.nextInChain = nullptr;
-    pass_descriptor.label = ToStringView("AppShellUiPass");
+    pass_descriptor.label = ToStringView("CryptVaultUiPass");
     pass_descriptor.colorAttachmentCount = 1;
     pass_descriptor.colorAttachments = &color_attachment;
     pass_descriptor.depthStencilAttachment = nullptr;
@@ -430,7 +430,7 @@ bool GpuContext::RenderFrame(double r, double g, double b, double a,
 
     WGPUCommandEncoderDescriptor encoder_descriptor{};
     encoder_descriptor.nextInChain = nullptr;
-    encoder_descriptor.label = ToStringView("AppShellFrameEncoder");
+    encoder_descriptor.label = ToStringView("CryptVaultFrameEncoder");
 
     WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(device_, &encoder_descriptor);
 
@@ -443,7 +443,7 @@ bool GpuContext::RenderFrame(double r, double g, double b, double a,
 
     WGPUCommandBufferDescriptor command_buffer_descriptor{};
     command_buffer_descriptor.nextInChain = nullptr;
-    command_buffer_descriptor.label = ToStringView("AppShellFrameCommands");
+    command_buffer_descriptor.label = ToStringView("CryptVaultFrameCommands");
 
     WGPUCommandBuffer commands = wgpuCommandEncoderFinish(encoder, &command_buffer_descriptor);
 
@@ -466,4 +466,4 @@ bool GpuContext::RenderFrame(double r, double g, double b, double a,
     return true;
 }
 
-}  // namespace appshell
+}  // namespace cryptvault

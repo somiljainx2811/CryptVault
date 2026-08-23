@@ -7,8 +7,8 @@
 // webgpu-headers submodule commit), not hand-written, to avoid ABI
 // drift between the header and the prebuilt binary.
 
-#ifndef APPSHELL_GPU_GPU_CONTEXT_H
-#define APPSHELL_GPU_GPU_CONTEXT_H
+#ifndef CRYPTVAULT_GPU_GPU_CONTEXT_H
+#define CRYPTVAULT_GPU_GPU_CONTEXT_H
 
 #include <cstdint>
 #include <functional>
@@ -18,7 +18,7 @@
 
 struct GLFWwindow;
 
-namespace appshell {
+namespace cryptvault {
 
 // RAII wrapper around one wgpu-native instance/adapter/device/surface
 // bound to a single window. Not copyable - owns GPU resources with a
@@ -100,6 +100,6 @@ private:
     std::string last_error_;
 };
 
-}  // namespace appshell
+}  // namespace cryptvault
 
-#endif  // APPSHELL_GPU_GPU_CONTEXT_H
+#endif  // CRYPTVAULT_GPU_GPU_CONTEXT_H

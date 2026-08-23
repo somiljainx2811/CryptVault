@@ -33,7 +33,7 @@ constexpr int kSmallWindowHeight = 300;
 constexpr int kLargeWindowWidth = 900;
 constexpr int kLargeWindowHeight = 600;
 constexpr float kBorder = 17.0f;
-constexpr appshell::UiColor kBorderColor{0.200f, 0.247f, 0.302f, 1.0f};
+constexpr cryptvault::UiColor kBorderColor{0.200f, 0.247f, 0.302f, 1.0f};
 
 struct InputState {
     float mouse_x = -1.0f;
@@ -71,15 +71,15 @@ struct InputState {
 }  // namespace
 
 int main() {
-    appshell::WindowConfig window_config;
+    cryptvault::WindowConfig window_config;
     window_config.title = "CryptVault";
     window_config.width = kSmallWindowWidth;
     window_config.height = kSmallWindowHeight;
     window_config.resizable = false;
     window_config.decorated = false;
 
-    appshell::Window window(window_config);
-    appshell::GpuContext gpu;
+    cryptvault::Window window(window_config);
+    cryptvault::GpuContext gpu;
 
     if (!window.Create()) {
         std::fprintf(stderr, "Failed to create window\n");

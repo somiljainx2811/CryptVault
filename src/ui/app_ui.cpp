@@ -54,7 +54,7 @@
 
 namespace {
 
-namespace anim = appshell::anim;  // so anim::MoveTowards/Ease/duration::* resolve below
+namespace anim = cryptvault::anim;  // so anim::MoveTowards/Ease/duration::* resolve below
 
 
 
@@ -77,7 +77,7 @@ constexpr int kLargeWindowHeight = 600;
 // NOTE: main.cpp keeps its own copy of kBorder too - same
 // out-of-sync risk as above.
 constexpr float kBorder = 17.0f;
-constexpr appshell::UiColor kBorderColor{0.200f, 0.247f, 0.302f, 1.0f};  // ~rgb(77, 51, 62)
+constexpr cryptvault::UiColor kBorderColor{0.200f, 0.247f, 0.302f, 1.0f};  // ~rgb(77, 51, 62)
 
 // Everything drawn by the screen/toolbar/tab/grid code below lives in
 // "content space": (0,0) is the top-left corner *inside* the border,
@@ -99,23 +99,23 @@ constexpr float kAddressBarHeight = 20.0f;
 // main().
 class ContentRenderer {
 public:
-    ContentRenderer(appshell::UiRenderer& ui, float offset_x, float offset_y)
+    ContentRenderer(cryptvault::UiRenderer& ui, float offset_x, float offset_y)
         : ui_(ui), offset_x_(offset_x), offset_y_(offset_y) {}
 
-    void DrawRect(float x, float y, float w, float h, appshell::UiColor color) {
+    void DrawRect(float x, float y, float w, float h, cryptvault::UiColor color) {
         ui_.DrawRect(x + offset_x_, y + offset_y_, w, h, color);
     }
 
-    void DrawRoundedRect(float x, float y, float w, float h, float radius, appshell::UiColor color) {
+    void DrawRoundedRect(float x, float y, float w, float h, float radius, cryptvault::UiColor color) {
         ui_.DrawRoundedRect(x + offset_x_, y + offset_y_, w, h, radius, color);
     }
 
     void DrawImage(float x, float y, float w, float h, int icon,
-                   appshell::UiColor tint = appshell::UiColor{2.0f, 2.0f, 2.0f, 2.0f}) {
+                   cryptvault::UiColor tint = cryptvault::UiColor{2.0f, 2.0f, 2.0f, 2.0f}) {
         ui_.DrawImage(x + offset_x_, y + offset_y_, w, h, icon, tint);
     }
 
-    void DrawLabel(float x, float y, const std::string& text, appshell::UiColor color,
+    void DrawLabel(float x, float y, const std::string& text, cryptvault::UiColor color,
                     float pixel_size = 1.0f) {
         ui_.DrawLabel(x + offset_x_, y + offset_y_, text, color, pixel_size);
     }
@@ -138,10 +138,10 @@ public:
     // runtime - see DrawSettingsPanel's background picker grid).
     // Everything else should go through the methods above, which
     // apply this ContentRenderer's offset automatically; this doesn't.
-    appshell::UiRenderer& Raw() { return ui_; }
+    cryptvault::UiRenderer& Raw() { return ui_; }
 
 private:
-    appshell::UiRenderer& ui_;
+    cryptvault::UiRenderer& ui_;
     float offset_x_;
     float offset_y_;
 };
@@ -153,22 +153,22 @@ private:
 // the content band is a flat near-black instead of the mockup's
 // purple art.
 namespace palette {
-constexpr appshell::UiColor kToolbar{0.14f, 0.16f, 0.13f, 1.0f};
-constexpr appshell::UiColor kAddressBar{0.08f, 0.09f, 0.08f, 1.0f};
-constexpr appshell::UiColor kTabBarBg{0.30f, 0.33f, 0.38f, 1.0f};
-constexpr appshell::UiColor kTabActive{0.47f, 0.52f, 0.60f, 1.0f};
-constexpr appshell::UiColor kTabInactive{0.34f, 0.37f, 0.43f, 1.0f};
-constexpr appshell::UiColor kContentBg{0.07f, 0.07f, 0.09f, 1.0f};
-constexpr appshell::UiColor kStatusBar{0.32f, 0.32f, 0.32f, 1.0f};
-constexpr appshell::UiColor kCellHover{1.0f, 1.0f, 1.0f, 0.06f};
-constexpr appshell::UiColor kCellSelected{1.0f, 1.0f, 1.0f, 0.10f};
-constexpr appshell::UiColor kTextPrimary{0.90f, 0.91f, 0.93f, 1.0f};
-constexpr appshell::UiColor kTextMuted{0.62f, 0.64f, 0.68f, 1.0f};
-constexpr appshell::UiColor kIconTint{0.72f, 0.72f, 0.74f, 1.0f};
-constexpr appshell::UiColor kIconTintHover{0.88f, 0.88f, 0.90f, 1.0f};
-constexpr appshell::UiColor kAccent{0.35f, 0.78f, 0.85f, 1.0f};  // sliding tab indicator, toasts
-constexpr appshell::UiColor kDanger{0.75f, 0.30f, 0.28f, 1.0f};  // destructive confirm buttons
-constexpr appshell::UiColor kDangerHover{0.85f, 0.36f, 0.34f, 1.0f};
+constexpr cryptvault::UiColor kToolbar{0.14f, 0.16f, 0.13f, 1.0f};
+constexpr cryptvault::UiColor kAddressBar{0.08f, 0.09f, 0.08f, 1.0f};
+constexpr cryptvault::UiColor kTabBarBg{0.30f, 0.33f, 0.38f, 1.0f};
+constexpr cryptvault::UiColor kTabActive{0.47f, 0.52f, 0.60f, 1.0f};
+constexpr cryptvault::UiColor kTabInactive{0.34f, 0.37f, 0.43f, 1.0f};
+constexpr cryptvault::UiColor kContentBg{0.07f, 0.07f, 0.09f, 1.0f};
+constexpr cryptvault::UiColor kStatusBar{0.32f, 0.32f, 0.32f, 1.0f};
+constexpr cryptvault::UiColor kCellHover{1.0f, 1.0f, 1.0f, 0.06f};
+constexpr cryptvault::UiColor kCellSelected{1.0f, 1.0f, 1.0f, 0.10f};
+constexpr cryptvault::UiColor kTextPrimary{0.90f, 0.91f, 0.93f, 1.0f};
+constexpr cryptvault::UiColor kTextMuted{0.62f, 0.64f, 0.68f, 1.0f};
+constexpr cryptvault::UiColor kIconTint{0.72f, 0.72f, 0.74f, 1.0f};
+constexpr cryptvault::UiColor kIconTintHover{0.88f, 0.88f, 0.90f, 1.0f};
+constexpr cryptvault::UiColor kAccent{0.35f, 0.78f, 0.85f, 1.0f};  // sliding tab indicator, toasts
+constexpr cryptvault::UiColor kDanger{0.75f, 0.30f, 0.28f, 1.0f};  // destructive confirm buttons
+constexpr cryptvault::UiColor kDangerHover{0.85f, 0.36f, 0.34f, 1.0f};
 }  // namespace palette
 
 // --- icon handles --------------------------------------------------------
@@ -221,7 +221,7 @@ std::filesystem::path ExecutableDir() {
 #endif
 }
 
-bool LoadIcons(appshell::UiRenderer& ui, Icons& icons) {
+bool LoadIcons(cryptvault::UiRenderer& ui, Icons& icons) {
     std::filesystem::path assets = ExecutableDir() / "assets";
     icons.folder = ui.LoadIcon((assets / "icons" / "folder.png").string());
     icons.vault = ui.LoadIcon((assets / "icons" / "vault.png").string());
@@ -269,7 +269,7 @@ struct Vault {
 };
 
 struct AppState {
-    appshell::UiInput input;
+    cryptvault::UiInput input;
     Screen screen = Screen::VaultList;
 
     // Current frame's clock, copied from UiAppInput each
@@ -1278,13 +1278,13 @@ float EffectiveDt(const AppState& state) {
     return state.settings.animations_enabled ? state.dt_seconds : 1.0f;
 }
 
-bool HitTest(const appshell::UiInput& input, float x, float y, float w, float h) {
+bool HitTest(const cryptvault::UiInput& input, float x, float y, float w, float h) {
     return input.mouse_x >= x && input.mouse_x <= x + w
            && input.mouse_y >= y && input.mouse_y <= y + h;
 }
 
-appshell::UiColor LerpColor(appshell::UiColor a, appshell::UiColor b, float t) {
-    return appshell::UiColor{
+cryptvault::UiColor LerpColor(cryptvault::UiColor a, cryptvault::UiColor b, float t) {
+    return cryptvault::UiColor{
         anim::Lerp(a.r, b.r, t),
         anim::Lerp(a.g, b.g, t),
         anim::Lerp(a.b, b.b, t),
@@ -1306,11 +1306,11 @@ appshell::UiColor LerpColor(appshell::UiColor a, appshell::UiColor b, float t) {
 // readable over whatever's in the photo); otherwise the color is
 // returned completely unchanged, so nothing about the no-background
 // (default) look changes at all.
-appshell::UiColor BackdropColor(appshell::UiColor opaque, bool has_background, float alpha_with_background) {
+cryptvault::UiColor BackdropColor(cryptvault::UiColor opaque, bool has_background, float alpha_with_background) {
     if (!has_background) {
         return opaque;
     }
-    appshell::UiColor translucent = opaque;
+    cryptvault::UiColor translucent = opaque;
     translucent.a = alpha_with_background;
     return translucent;
 }
@@ -1401,7 +1401,7 @@ std::vector<std::string> ScanBackgroundChoices() {
 // (BackdropColor) that read it for that, not for drawing (the actual
 // per-frame draw uses state.background.frame_icons directly - see
 // UiAppBeginFrame).
-void LoadBackgroundChoice(appshell::UiRenderer& ui, AppState& state, Icons& icons, const std::string& path) {
+void LoadBackgroundChoice(cryptvault::UiRenderer& ui, AppState& state, Icons& icons, const std::string& path) {
     std::string ext = std::filesystem::path(path).extension().string();
     for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
@@ -1492,10 +1492,10 @@ std::string BuildAddressBreadcrumb(ContentRenderer& ui, const std::vector<std::s
 // while held down, easing back to 1.0x on release. Returns true on a
 // click release inside its bounds this frame.
 bool IconButton(ContentRenderer& ui, float x, float y, float size, int icon,
-                const appshell::UiInput& input, float* scale_state = nullptr,
+                const cryptvault::UiInput& input, float* scale_state = nullptr,
                 float dt_seconds = 0.0f) {
     bool hovered = HitTest(input, x, y, size, size);
-    appshell::UiColor tint = hovered ? palette::kIconTintHover : palette::kIconTint;
+    cryptvault::UiColor tint = hovered ? palette::kIconTintHover : palette::kIconTint;
 
     float scale = 1.0f;
     if (scale_state) {
@@ -1540,7 +1540,7 @@ void DrawToolbar(ContentRenderer& ui, const Icons& icons, AppState& state) {
             float w,
             float h,
             float radius,
-            appshell::UiColor color) {
+            cryptvault::UiColor color) {
             ui.DrawRoundedRect(x, y, w, h, radius, color);
         };
 
@@ -1601,7 +1601,7 @@ void DrawToolbar(ContentRenderer& ui, const Icons& icons, AppState& state) {
                 kIconSize,
                 kIconSize,
                 4.0f,
-                appshell::UiColor{
+                cryptvault::UiColor{
                     0.32f,
                     0.35f,
                     0.40f,
@@ -1615,7 +1615,7 @@ void DrawToolbar(ContentRenderer& ui, const Icons& icons, AppState& state) {
                 kIconY + 2.0f,
                 kIconSize - 6.0f,
                 1.0f,
-                appshell::UiColor{
+                cryptvault::UiColor{
                     1.0f,
                     1.0f,
                     1.0f,
@@ -1741,13 +1741,13 @@ void DrawToolbar(ContentRenderer& ui, const Icons& icons, AppState& state) {
             kAddressBarHeight,
             kBoxRadius,
             hovered
-                ? appshell::UiColor{
+                ? cryptvault::UiColor{
                       0.20f,
                       0.22f,
                       0.19f,
                       1.0f
                   }
-                : appshell::UiColor{
+                : cryptvault::UiColor{
                       0.16f,
                       0.18f,
                       0.15f,
@@ -1991,12 +1991,12 @@ void DrawToolbar(ContentRenderer& ui, const Icons& icons, AppState& state) {
 // tab, which can't be closed) an "x" close glyph. Reports which
 // action (if any) the user took this frame via the out params.
 void DrawTab(ContentRenderer& ui, const Icons& icons, float x, float y, float w, float h,
-             const std::string& name, bool active, bool closable, const appshell::UiInput& input,
+             const std::string& name, bool active, bool closable, const cryptvault::UiInput& input,
              bool* out_activate, bool* out_close) {
     *out_activate = false;
     *out_close = false;
 
-    appshell::UiColor bg = active ? palette::kTabActive : palette::kTabInactive;
+    cryptvault::UiColor bg = active ? palette::kTabActive : palette::kTabInactive;
     bool hovered = HitTest(input, x, y, w, h);
     ui.DrawRect(x, y, w, h, bg);
 
@@ -2019,7 +2019,7 @@ void DrawTab(ContentRenderer& ui, const Icons& icons, float x, float y, float w,
 
     if (closable) {
         bool close_hovered = HitTest(input, close_x - 1.0f, y, kCloseSize + 2.0f, h);
-        appshell::UiColor x_color = close_hovered ? palette::kTextPrimary : palette::kTextMuted;
+        cryptvault::UiColor x_color = close_hovered ? palette::kTextPrimary : palette::kTextMuted;
         ui.DrawLabel(close_x, close_y, "X", x_color, 1.0f);
         if (close_hovered && input.clicked) {
             *out_close = true;
@@ -2216,7 +2216,7 @@ TileGridResult DrawTileGrid(ContentRenderer& ui, const Icons& icons, float area_
                              float content_width, std::vector<T>& items, int tile_icon, int* selected,
                              int trailing_action_icon, const char* trailing_label_line2,
                              float& trailing_hover_amount, float& scroll_offset, float dt_seconds,
-                             const appshell::UiInput& input, AppState::TileDrag& drag) {
+                             const cryptvault::UiInput& input, AppState::TileDrag& drag) {
     ui.DrawRect(0, area_y, content_width, area_h,
                 BackdropColor(palette::kContentBg, icons.background >= 0, 0.0f));
 
@@ -2260,13 +2260,13 @@ TileGridResult DrawTileGrid(ContentRenderer& ui, const Icons& icons, float area_
         float track_y = area_y + kPaddingY;
         float track_h = visible_h;
         ui.DrawRect(track_x, track_y, kScrollbarW, track_h,
-                    appshell::UiColor{1.0f, 1.0f, 1.0f, 0.06f});
+                    cryptvault::UiColor{1.0f, 1.0f, 1.0f, 0.06f});
 
         float thumb_h = std::max(16.0f, (visible_h / content_h) * track_h);
         float thumb_travel = track_h - thumb_h;
         float thumb_y = track_y + (max_scroll > 0.0f ? (scroll_offset / max_scroll) * thumb_travel : 0.0f);
         ui.DrawRoundedRect(track_x, thumb_y, kScrollbarW, thumb_h, 2.0f,
-                            appshell::UiColor{1.0f, 1.0f, 1.0f, 0.28f});
+                            cryptvault::UiColor{1.0f, 1.0f, 1.0f, 0.28f});
     }
 
     // Everything past here can be scrolled out of [area_y, area_y +
@@ -2381,7 +2381,7 @@ TileGridResult DrawTileGrid(ContentRenderer& ui, const Icons& icons, float area_
         // handling while it's lifted.
         if (drag.active && !is_trailing && static_cast<int>(i) == drag.source_index) {
             ui.DrawRoundedRect(cell_x + 2.0f, cell_y, usable_cell_w - 4.0f, kRowH - 4.0f, 4.0f,
-                                appshell::UiColor{1.0f, 1.0f, 1.0f, 0.14f});
+                                cryptvault::UiColor{1.0f, 1.0f, 1.0f, 0.14f});
             continue;
         }
 
@@ -2394,10 +2394,10 @@ TileGridResult DrawTileGrid(ContentRenderer& ui, const Icons& icons, float area_
         // now gets an accent outline so the user can see where it's
         // headed before releasing.
         if (drag.active && !is_trailing && static_cast<int>(i) == drag.hover_slot) {
-            appshell::UiColor outline = palette::kAccent;
+            cryptvault::UiColor outline = palette::kAccent;
             outline.a = 0.6f;
             ui.DrawRoundedRect(cell_x + 1.0f, cell_y + 1.0f, usable_cell_w - 2.0f, kRowH - 3.0f, 4.0f,
-                                appshell::UiColor{outline.r, outline.g, outline.b, 0.10f});
+                                cryptvault::UiColor{outline.r, outline.g, outline.b, 0.10f});
         }
 
         float& hover_amount = is_trailing ? trailing_hover_amount : items[i].hover_amount;
@@ -2408,7 +2408,7 @@ TileGridResult DrawTileGrid(ContentRenderer& ui, const Icons& icons, float area_
         if (is_selected) {
             ui.DrawRect(cell_x + 2.0f, cell_y, usable_cell_w - 4.0f, kRowH - 4.0f, palette::kCellSelected);
         } else if (hover_amount > 0.001f) {
-            appshell::UiColor glow = palette::kCellHover;
+            cryptvault::UiColor glow = palette::kCellHover;
             glow.a *= hover_amount;
             ui.DrawRect(cell_x + 2.0f, cell_y, usable_cell_w - 4.0f, kRowH - 4.0f, glow);
         }
@@ -2422,7 +2422,7 @@ TileGridResult DrawTileGrid(ContentRenderer& ui, const Icons& icons, float area_
         float scaled_icon_y = icon_y - (icon_size - kIconSize) * 0.5f;
 
         int icon = is_trailing ? trailing_action_icon : TileIconFor(items[i], tile_icon);
-        appshell::UiColor tint = LerpColor(palette::kIconTint, palette::kIconTintHover, hover_amount);
+        cryptvault::UiColor tint = LerpColor(palette::kIconTint, palette::kIconTintHover, hover_amount);
         if (icon == kProceduralFileIcon) {
             // A small document glyph: a page (rounded rect) with a
             // folded top-right corner and a couple of lines standing
@@ -2436,10 +2436,10 @@ TileGridResult DrawTileGrid(ContentRenderer& ui, const Icons& icons, float area_
             float py = scaled_icon_y + (icon_size - ph) * 0.5f;
             ui.DrawRoundedRect(px, py, pw, ph, 2.0f, tint);
             float fold = pw * 0.32f;
-            appshell::UiColor fold_color = LerpColor(palette::kContentBg, palette::kCellHover, 0.0f);
+            cryptvault::UiColor fold_color = LerpColor(palette::kContentBg, palette::kCellHover, 0.0f);
             fold_color.a = 1.0f;
             ui.DrawRect(px + pw - fold, py, fold, fold, palette::kContentBg);
-            appshell::UiColor line_color = palette::kContentBg;
+            cryptvault::UiColor line_color = palette::kContentBg;
             for (int line = 0; line < 3; ++line) {
                 float line_y = py + ph * 0.42f + static_cast<float>(line) * (ph * 0.16f);
                 ui.DrawRect(px + pw * 0.16f, line_y, pw * 0.68f, std::max(1.0f, ph * 0.06f), line_color);
@@ -2464,7 +2464,7 @@ TileGridResult DrawTileGrid(ContentRenderer& ui, const Icons& icons, float area_
             constexpr float kBadgeSize = 12.0f;
             ui.DrawImage(icon_x + (kIconSize - kBadgeSize) * 0.5f,
                          icon_y + (kIconSize - kBadgeSize) * 0.5f, kBadgeSize, kBadgeSize,
-                         icons.plus, appshell::UiColor{1.0f, 1.0f, 1.0f, 1.0f});
+                         icons.plus, cryptvault::UiColor{1.0f, 1.0f, 1.0f, 1.0f});
             std::string line2 = TruncateToWidth(ui, trailing_label_line2, label_max_width);
             float label_y = icon_y + kIconSize + 4.0f;
             ui.DrawLabel(cell_x + (usable_cell_w - ui.MeasureText("ADD", 1.0f)) * 0.5f, label_y,
@@ -2491,9 +2491,9 @@ TileGridResult DrawTileGrid(ContentRenderer& ui, const Icons& icons, float area_
             float x_y = cell_y + 2.0f;
             over_delete_x = HitTest(input, x_x, x_y, kXSize, kXSize);
 
-            appshell::UiColor x_bg{0.0f, 0.0f, 0.0f, 0.35f * hover_amount};
+            cryptvault::UiColor x_bg{0.0f, 0.0f, 0.0f, 0.35f * hover_amount};
             ui.DrawRoundedRect(x_x, x_y, kXSize, kXSize, 3.0f, x_bg);
-            appshell::UiColor x_color = over_delete_x ? palette::kTextPrimary : palette::kTextMuted;
+            cryptvault::UiColor x_color = over_delete_x ? palette::kTextPrimary : palette::kTextMuted;
             x_color.a *= hover_amount;
             ui.DrawLabel(x_x + 3.0f, x_y + 2.0f, "X", x_color, 1.0f);
 
@@ -2529,13 +2529,13 @@ TileGridResult DrawTileGrid(ContentRenderer& ui, const Icons& icons, float area_
         float ghost_y = input.mouse_y - kIconSize * 0.5f - 4.0f;
 
         ui.DrawRoundedRect(ghost_x, ghost_y, kGhostW, kIconSize + 22.0f, 6.0f,
-                            appshell::UiColor{0.0f, 0.0f, 0.0f, 0.55f});
-        appshell::UiColor ghost_tint = palette::kIconTintHover;
+                            cryptvault::UiColor{0.0f, 0.0f, 0.0f, 0.55f});
+        cryptvault::UiColor ghost_tint = palette::kIconTintHover;
         ghost_tint.a = 0.9f;
         ui.DrawImage(ghost_x + (kGhostW - kIconSize) * 0.5f, ghost_y + 4.0f, kIconSize, kIconSize,
                      tile_icon, ghost_tint);
         std::string ghost_label = TruncateToWidth(ui, items[drag.source_index].name, kGhostW - 6.0f);
-        appshell::UiColor ghost_text = palette::kTextPrimary;
+        cryptvault::UiColor ghost_text = palette::kTextPrimary;
         ghost_text.a = 0.9f;
         ui.DrawLabel(ghost_x + (kGhostW - ui.MeasureText(ghost_label, 1.0f)) * 0.5f,
                      ghost_y + kIconSize + 8.0f, ghost_label, ghost_text, 1.0f);
@@ -2695,7 +2695,7 @@ void DrawVaultFolderScreen(ContentRenderer& ui, const Icons& icons, AppState& st
         float t = state.vault_open_flourish.Progress(state.now_seconds);
         float alpha = 0.28f * (1.0f - anim::Ease(anim::Easing::kEaseOutCubic, t));
         ui.DrawRect(0, 0, state.content_width, state.content_height,
-                    appshell::UiColor{palette::kAccent.r, palette::kAccent.g, palette::kAccent.b, alpha});
+                    cryptvault::UiColor{palette::kAccent.r, palette::kAccent.g, palette::kAccent.b, alpha});
     }
 }
 
@@ -2736,14 +2736,14 @@ void DrawToasts(ContentRenderer& ui, AppState& state) {
         float slide_offset = (1.0f - slide_in) * (kToastW + kMargin);
         float x = state.content_width - kMargin - kToastW + slide_offset;
 
-        appshell::UiColor bg{0.10f, 0.12f, 0.11f, 0.92f * alpha};
+        cryptvault::UiColor bg{0.10f, 0.12f, 0.11f, 0.92f * alpha};
         ui.DrawRoundedRect(x, y, kToastW, kToastH, 4.0f, bg);
 
-        appshell::UiColor accent = palette::kAccent;
+        cryptvault::UiColor accent = palette::kAccent;
         accent.a *= alpha;
         ui.DrawRect(x, y, 3.0f, kToastH, accent);
 
-        appshell::UiColor text_color = palette::kTextPrimary;
+        cryptvault::UiColor text_color = palette::kTextPrimary;
         text_color.a *= alpha;
         ui.DrawLabel(x + 10.0f, y + (kToastH - 7.0f) * 0.5f, toast.text, text_color, 1.0f);
 
@@ -2776,7 +2776,7 @@ void DrawDeleteModal(ContentRenderer& ui, AppState& state) {
                               state.pending_delete.timeline.Progress(state.now_seconds));
 
     ui.DrawRect(0, 0, state.content_width, state.content_height,
-                appshell::UiColor{0.0f, 0.0f, 0.0f, 0.5f * eased});
+                cryptvault::UiColor{0.0f, 0.0f, 0.0f, 0.5f * eased});
 
     constexpr float kPanelW = 190.0f;
     constexpr float kPanelH = 92.0f;
@@ -2787,7 +2787,7 @@ void DrawDeleteModal(ContentRenderer& ui, AppState& state) {
     float panel_y = (state.content_height - panel_h) * 0.5f;
 
     ui.DrawRoundedRect(panel_x, panel_y, panel_w, panel_h, 6.0f,
-                        appshell::UiColor{0.15f, 0.17f, 0.16f, eased});
+                        cryptvault::UiColor{0.15f, 0.17f, 0.16f, eased});
 
     const char* title = state.pending_delete.is_vault ? "DELETE VAULT" : "DELETE FOLDER";
     ui.DrawLabel(panel_x + 12.0f, panel_y + 12.0f, title, palette::kTextPrimary, 1.0f);
@@ -2917,7 +2917,7 @@ void DrawClearAllDataModal(ContentRenderer& ui, AppState& state) {
     }
 
     ui.DrawRect(0, 0, state.content_width, state.content_height,
-                appshell::UiColor{0.0f, 0.0f, 0.0f, 0.5f});
+                cryptvault::UiColor{0.0f, 0.0f, 0.0f, 0.5f});
 
     constexpr float kPanelW = 210.0f;
     constexpr float kPanelH = 108.0f;
@@ -2925,7 +2925,7 @@ void DrawClearAllDataModal(ContentRenderer& ui, AppState& state) {
     float panel_y = (state.content_height - kPanelH) * 0.5f;
 
     ui.DrawRoundedRect(panel_x, panel_y, kPanelW, kPanelH, 6.0f,
-                        appshell::UiColor{0.15f, 0.17f, 0.16f, 1.0f});
+                        cryptvault::UiColor{0.15f, 0.17f, 0.16f, 1.0f});
 
     ui.DrawLabel(panel_x + 12.0f, panel_y + 12.0f, "CLEAR ALL DATA", palette::kTextPrimary, 1.0f);
 
@@ -3010,7 +3010,7 @@ void DrawSettingsPanel(ContentRenderer& ui, AppState& state, Icons& icons) {
     // it to close, same "click outside to dismiss" idea as the delete
     // modal's Cancel button, just without a button to click.
     ui.DrawRect(0, 0, state.content_width, state.content_height,
-                appshell::UiColor{0.0f, 0.0f, 0.0f, 0.25f * progress});
+                cryptvault::UiColor{0.0f, 0.0f, 0.0f, 0.25f * progress});
     if (state.settings_panel_open
         && HitTest(state.input, 0, 0, panel_x, state.content_height) && state.input.clicked) {
         state.settings_panel_open = false;
@@ -3018,9 +3018,9 @@ void DrawSettingsPanel(ContentRenderer& ui, AppState& state, Icons& icons) {
 
     float panel_alpha = state.settings.glass_effect_enabled ? 0.90f : 0.99f;
     ui.DrawRect(panel_x, 0, kPanelW, state.content_height,
-                appshell::UiColor{0.13f, 0.15f, 0.14f, panel_alpha * progress});
+                cryptvault::UiColor{0.13f, 0.15f, 0.14f, panel_alpha * progress});
     ui.DrawRect(panel_x, 0, 2.0f, state.content_height,
-                appshell::UiColor{1.0f, 1.0f, 1.0f, 0.06f * progress});  // left-edge highlight
+                cryptvault::UiColor{1.0f, 1.0f, 1.0f, 0.06f * progress});  // left-edge highlight
 
     // Too thin a sliver to bother with text (it'd just get clipped
     // oddly mid-slide) - the panel itself is still visible above.
@@ -3280,7 +3280,7 @@ void DrawSettingsPanel(ContentRenderer& ui, AppState& state, Icons& icons) {
         float thumb_h = std::max(16.0f, visible_h * (visible_h / content_h));
         float thumb_y = kContentTop + (visible_h - thumb_h) * (state.settings_scroll / max_scroll);
         ui.DrawRoundedRect(panel_x + kPanelW - 5.0f, thumb_y, 3.0f, thumb_h, 1.5f,
-                            appshell::UiColor{1.0f, 1.0f, 1.0f, 0.25f});
+                            cryptvault::UiColor{1.0f, 1.0f, 1.0f, 0.25f});
     }
 }
 
@@ -3412,7 +3412,7 @@ void DrawCommandPalette(ContentRenderer& ui, AppState& state) {
     }
 
     ui.DrawRect(0, 0, state.content_width, state.content_height,
-                appshell::UiColor{0.0f, 0.0f, 0.0f, 0.45f * eased});
+                cryptvault::UiColor{0.0f, 0.0f, 0.0f, 0.45f * eased});
 
     constexpr float kPanelW = 200.0f;
     constexpr float kRowH = 16.0f;
@@ -3426,7 +3426,7 @@ void DrawCommandPalette(ContentRenderer& ui, AppState& state) {
 
     float panel_alpha = state.settings.glass_effect_enabled ? 0.94f : 1.0f;
     ui.DrawRoundedRect(panel_x, panel_y, panel_w, panel_h, 6.0f,
-                        appshell::UiColor{0.12f, 0.14f, 0.13f, panel_alpha * eased});
+                        cryptvault::UiColor{0.12f, 0.14f, 0.13f, panel_alpha * eased});
 
     // Clicking the scrim outside the panel closes it - same pattern
     // as the settings panel.
@@ -3443,12 +3443,12 @@ void DrawCommandPalette(ContentRenderer& ui, AppState& state) {
     std::string query_display = state.command_palette.query.empty()
         ? "SEARCH COMMANDS..."
         : state.command_palette.query;
-    appshell::UiColor query_color =
+    cryptvault::UiColor query_color =
         state.command_palette.query.empty() ? palette::kTextMuted : palette::kTextPrimary;
     ui.DrawLabel(panel_x + 10.0f, panel_y + 9.0f,
                  TruncateToWidth(ui, query_display, panel_w - 20.0f), query_color, 1.0f);
     ui.DrawRect(panel_x + 8.0f, panel_y + kHeaderH - 2.0f, panel_w - 16.0f, 1.0f,
-                appshell::UiColor{1.0f, 1.0f, 1.0f, 0.08f});
+                cryptvault::UiColor{1.0f, 1.0f, 1.0f, 0.08f});
 
     float row_y = panel_y + kHeaderH + 4.0f;
     for (size_t i = 0; i < visible.size() && i < 6; ++i) {
@@ -3458,10 +3458,10 @@ void DrawCommandPalette(ContentRenderer& ui, AppState& state) {
 
         if (is_selected || hovered) {
             ui.DrawRect(panel_x + 4.0f, row_y, panel_w - 8.0f, kRowH,
-                        appshell::UiColor{1.0f, 1.0f, 1.0f, is_selected ? 0.10f : 0.06f});
+                        cryptvault::UiColor{1.0f, 1.0f, 1.0f, is_selected ? 0.10f : 0.06f});
         }
 
-        appshell::UiColor text_color = cmd.enabled ? palette::kTextPrimary : palette::kTextMuted;
+        cryptvault::UiColor text_color = cmd.enabled ? palette::kTextPrimary : palette::kTextMuted;
         ui.DrawLabel(panel_x + 10.0f, row_y + (kRowH - 7.0f) * 0.5f,
                      TruncateToWidth(ui, cmd.label, panel_w - 20.0f), text_color, 1.0f);
 
@@ -3532,7 +3532,7 @@ void DrawContextMenu(ContentRenderer& ui, AppState& state) {
 
     float bg_alpha = state.settings.glass_effect_enabled ? 0.95f : 1.0f;
     ui.DrawRoundedRect(menu_x, menu_y, w, h, 4.0f,
-                        appshell::UiColor{0.15f, 0.17f, 0.16f, bg_alpha * eased});
+                        cryptvault::UiColor{0.15f, 0.17f, 0.16f, bg_alpha * eased});
 
     if (state.input.clicked && !HitTest(state.input, menu_x, menu_y, w, h)) {
         state.context_menu.open = false;
@@ -3553,7 +3553,7 @@ void DrawContextMenu(ContentRenderer& ui, AppState& state) {
     for (const std::string& label : items) {
         bool hovered = HitTest(state.input, menu_x + 2.0f, row_y, w - 4.0f, kItemH);
         if (hovered) {
-            ui.DrawRect(menu_x + 2.0f, row_y, w - 4.0f, kItemH, appshell::UiColor{1.0f, 1.0f, 1.0f, 0.08f});
+            ui.DrawRect(menu_x + 2.0f, row_y, w - 4.0f, kItemH, cryptvault::UiColor{1.0f, 1.0f, 1.0f, 0.08f});
         }
         ui.DrawLabel(menu_x + 8.0f, row_y + (kItemH - 7.0f) * 0.5f, label, palette::kTextPrimary, 1.0f);
 
@@ -3623,7 +3623,7 @@ void DrawRenamePanel(ContentRenderer& ui, AppState& state) {
     }
 
     ui.DrawRect(0, 0, state.content_width, state.content_height,
-                appshell::UiColor{0.0f, 0.0f, 0.0f, 0.5f});
+                cryptvault::UiColor{0.0f, 0.0f, 0.0f, 0.5f});
 
     constexpr float kPanelW = 180.0f;
     constexpr float kPanelH = 70.0f;
@@ -3632,7 +3632,7 @@ void DrawRenamePanel(ContentRenderer& ui, AppState& state) {
 
     float bg_alpha = state.settings.glass_effect_enabled ? 0.95f : 1.0f;
     ui.DrawRoundedRect(panel_x, panel_y, kPanelW, kPanelH, 6.0f,
-                        appshell::UiColor{0.15f, 0.17f, 0.16f, bg_alpha});
+                        cryptvault::UiColor{0.15f, 0.17f, 0.16f, bg_alpha});
 
     const char* title = state.rename.is_vault ? "RENAME VAULT" : "RENAME FOLDER";
     ui.DrawLabel(panel_x + 12.0f, panel_y + 10.0f, title, palette::kTextPrimary, 1.0f);
@@ -3723,9 +3723,9 @@ void DrawResizeToggle(ContentRenderer& ui, AppState& state) {
 
     bool hovered = HitTest(state.input, x, y, kSize, kSize);
 
-    appshell::UiColor bg = hovered
-        ? appshell::UiColor{0.32f, 0.35f, 0.40f, 0.55f}
-        : appshell::UiColor{0.32f, 0.35f, 0.40f, 0.30f};
+    cryptvault::UiColor bg = hovered
+        ? cryptvault::UiColor{0.32f, 0.35f, 0.40f, 0.55f}
+        : cryptvault::UiColor{0.32f, 0.35f, 0.40f, 0.30f};
     ui.DrawRoundedRect(x, y, kSize, kSize, 3.0f, bg);
 
     // Shows the *current* size class (S = 400x300, B = 900x600);
@@ -3761,9 +3761,9 @@ void DrawLockToggle(ContentRenderer& ui, AppState& state) {
 
     bool hovered = HitTest(state.input, x, y, kSize, kSize);
 
-    appshell::UiColor bg = hovered
-        ? appshell::UiColor{0.32f, 0.35f, 0.40f, 0.55f}
-        : appshell::UiColor{0.32f, 0.35f, 0.40f, 0.30f};
+    cryptvault::UiColor bg = hovered
+        ? cryptvault::UiColor{0.32f, 0.35f, 0.40f, 0.55f}
+        : cryptvault::UiColor{0.32f, 0.35f, 0.40f, 0.30f};
     ui.DrawRoundedRect(x, y, kSize, kSize, 3.0f, bg);
 
     // A tiny procedural padlock glyph rather than a label/icon asset -
@@ -3851,7 +3851,7 @@ void DrawBorderRightClickMenu(ContentRenderer& ui, AppState& state) {
     menu_y = std::max(0.0f, menu_y);
 
     ui.DrawRoundedRect(menu_x, menu_y, kMenuW, menu_h, 5.0f,
-                        appshell::UiColor{0.15f, 0.17f, 0.16f, 0.85f + 0.15f * eased});
+                        cryptvault::UiColor{0.15f, 0.17f, 0.16f, 0.85f + 0.15f * eased});
 
     float row_y = menu_y + 3.0f;
 
@@ -3860,7 +3860,7 @@ void DrawBorderRightClickMenu(ContentRenderer& ui, AppState& state) {
     // change - see UiAppGetAlwaysOnTop's comment).
     bool top_hovered = HitTest(state.input, menu_x + 2.0f, row_y, kMenuW - 4.0f, kItemH);
     if (top_hovered) {
-        ui.DrawRect(menu_x + 2.0f, row_y, kMenuW - 4.0f, kItemH, appshell::UiColor{1.0f, 1.0f, 1.0f, 0.08f});
+        ui.DrawRect(menu_x + 2.0f, row_y, kMenuW - 4.0f, kItemH, cryptvault::UiColor{1.0f, 1.0f, 1.0f, 0.08f});
     }
     if (state.always_on_top) {
         ui.DrawLabel(menu_x + 8.0f, row_y + (kItemH - 7.0f) * 0.5f, "X", palette::kAccent, 1.0f);
@@ -3876,7 +3876,7 @@ void DrawBorderRightClickMenu(ContentRenderer& ui, AppState& state) {
     // CLOSE
     bool close_hovered = HitTest(state.input, menu_x + 2.0f, row_y, kMenuW - 4.0f, kItemH);
     if (close_hovered) {
-        ui.DrawRect(menu_x + 2.0f, row_y, kMenuW - 4.0f, kItemH, appshell::UiColor{1.0f, 1.0f, 1.0f, 0.08f});
+        ui.DrawRect(menu_x + 2.0f, row_y, kMenuW - 4.0f, kItemH, cryptvault::UiColor{1.0f, 1.0f, 1.0f, 0.08f});
     }
     ui.DrawLabel(menu_x + 8.0f, row_y + (kItemH - 7.0f) * 0.5f, "CLOSE", palette::kTextPrimary, 1.0f);
     if (close_hovered && state.input.clicked) {
@@ -3924,7 +3924,7 @@ void DrawLockScreen(ContentRenderer& ui, AppState& state) {
     float cy = state.content_height * 0.42f;
 
     bool hovered = HitTest(state.input, cx - kGlyphSize * 0.5f, cy - kGlyphSize * 0.5f, kGlyphSize, kGlyphSize);
-    appshell::UiColor glyph_color = hovered ? palette::kAccent : palette::kTextPrimary;
+    cryptvault::UiColor glyph_color = hovered ? palette::kAccent : palette::kTextPrimary;
 
     float shackle_w = kGlyphSize * 0.46f;
     float shackle_h = kGlyphSize * 0.36f;
@@ -3974,7 +3974,7 @@ void DrawLockScreen(ContentRenderer& ui, AppState& state) {
     }
 
     ui.DrawRect(0, 0, state.content_width, state.content_height,
-                appshell::UiColor{0.0f, 0.0f, 0.0f, 0.55f});
+                cryptvault::UiColor{0.0f, 0.0f, 0.0f, 0.55f});
 
     constexpr float kPanelW = 180.0f;
     constexpr float kPanelH = 82.0f;
@@ -3982,7 +3982,7 @@ void DrawLockScreen(ContentRenderer& ui, AppState& state) {
     float panel_y = (state.content_height - kPanelH) * 0.5f;
 
     ui.DrawRoundedRect(panel_x, panel_y, kPanelW, kPanelH, 6.0f,
-                        appshell::UiColor{0.15f, 0.17f, 0.16f, 1.0f});
+                        cryptvault::UiColor{0.15f, 0.17f, 0.16f, 1.0f});
     ui.DrawLabel(panel_x + 12.0f, panel_y + 10.0f, "ENTER PASSWORD", palette::kTextPrimary, 1.0f);
 
     constexpr float kFieldH = 16.0f;
@@ -4057,7 +4057,7 @@ void DrawChangePasswordPanel(ContentRenderer& ui, AppState& state) {
     }
 
     ui.DrawRect(0, 0, state.content_width, state.content_height,
-                appshell::UiColor{0.0f, 0.0f, 0.0f, 0.5f});
+                cryptvault::UiColor{0.0f, 0.0f, 0.0f, 0.5f});
 
     constexpr float kPanelW = 190.0f;
     constexpr float kPanelH = 84.0f;
@@ -4065,7 +4065,7 @@ void DrawChangePasswordPanel(ContentRenderer& ui, AppState& state) {
     float panel_y = (state.content_height - kPanelH) * 0.5f;
 
     ui.DrawRoundedRect(panel_x, panel_y, kPanelW, kPanelH, 6.0f,
-                        appshell::UiColor{0.15f, 0.17f, 0.16f, 1.0f});
+                        cryptvault::UiColor{0.15f, 0.17f, 0.16f, 1.0f});
 
     const char* title = "CHANGE PASSWORD";
     if (state.change_password.stage == 0) title = "CURRENT PASSWORD";
@@ -4170,7 +4170,7 @@ void DrawUnlockPrompt(ContentRenderer& ui, AppState& state) {
     }
 
     ui.DrawRect(0, 0, state.content_width, state.content_height,
-                appshell::UiColor{0.0f, 0.0f, 0.0f, 0.55f});
+                cryptvault::UiColor{0.0f, 0.0f, 0.0f, 0.55f});
 
     constexpr float kPanelW = 190.0f;
     constexpr float kPanelH = 82.0f;
@@ -4178,7 +4178,7 @@ void DrawUnlockPrompt(ContentRenderer& ui, AppState& state) {
     float panel_y = (state.content_height - kPanelH) * 0.5f;
 
     ui.DrawRoundedRect(panel_x, panel_y, kPanelW, kPanelH, 6.0f,
-                        appshell::UiColor{0.15f, 0.17f, 0.16f, 1.0f});
+                        cryptvault::UiColor{0.15f, 0.17f, 0.16f, 1.0f});
 
     std::string title = "UNLOCK \"" + state.vaults[state.unlock_prompt.vault_index].name + "\"";
     ui.DrawLabel(panel_x + 12.0f, panel_y + 10.0f,
@@ -4264,7 +4264,7 @@ void DrawCreateVaultWizard(ContentRenderer& ui, AppState& state) {
     }
 
     ui.DrawRect(0, 0, state.content_width, state.content_height,
-                appshell::UiColor{0.0f, 0.0f, 0.0f, 0.55f});
+                cryptvault::UiColor{0.0f, 0.0f, 0.0f, 0.55f});
 
     constexpr float kPanelW = 230.0f;
     constexpr float kPanelH = 86.0f;
@@ -4272,7 +4272,7 @@ void DrawCreateVaultWizard(ContentRenderer& ui, AppState& state) {
     float panel_y = (state.content_height - kPanelH) * 0.5f;
 
     ui.DrawRoundedRect(panel_x, panel_y, kPanelW, kPanelH, 6.0f,
-                        appshell::UiColor{0.15f, 0.17f, 0.16f, 1.0f});
+                        cryptvault::UiColor{0.15f, 0.17f, 0.16f, 1.0f});
 
     int stage = state.create_vault_wizard.stage;
     const char* title = "NAME THIS VAULT";
@@ -4809,7 +4809,7 @@ private:
 }  // namespace
 
 struct UiApp {
-    appshell::UiRenderer ui;
+    cryptvault::UiRenderer ui;
     AppState state;
     Icons icons;
 
@@ -4822,7 +4822,7 @@ struct UiApp {
     std::unique_ptr<ApiServer> api_server;
 };
 
-extern "C" APPSHELL_UI_API UiApp* UiAppCreate(WGPUDevice device, WGPUQueue queue,
+extern "C" CRYPTVAULT_UI_API UiApp* UiAppCreate(WGPUDevice device, WGPUQueue queue,
                                                 WGPUTextureFormat surface_format) {
     auto* app = new UiApp();
     if (!app->ui.Create(device, queue, surface_format)) {
@@ -4866,7 +4866,7 @@ extern "C" APPSHELL_UI_API UiApp* UiAppCreate(WGPUDevice device, WGPUQueue queue
     return app;
 }
 
-extern "C" APPSHELL_UI_API void UiAppDestroy(UiApp* app) {
+extern "C" CRYPTVAULT_UI_API void UiAppDestroy(UiApp* app) {
     if (app && app->api_server) {
         // Explicit, not just relying on ~ApiServer via the unique_ptr
         // destructor below - makes the ordering intentional (stop the
@@ -4892,7 +4892,7 @@ extern "C" APPSHELL_UI_API void UiAppDestroy(UiApp* app) {
     delete app;
 }
 
-extern "C" APPSHELL_UI_API void UiAppBeginFrame(UiApp* app, uint32_t width, uint32_t height,
+extern "C" CRYPTVAULT_UI_API void UiAppBeginFrame(UiApp* app, uint32_t width, uint32_t height,
                                                    const UiAppInput* input) {
     if (!app || !input || width == 0 || height == 0) return;
 
@@ -5051,12 +5051,12 @@ extern "C" APPSHELL_UI_API void UiAppBeginFrame(UiApp* app, uint32_t width, uint
     DrawClearAllDataModal(content, app->state);
 }
 
-extern "C" APPSHELL_UI_API void UiAppEndFrame(UiApp* app, WGPURenderPassEncoder pass) {
+extern "C" CRYPTVAULT_UI_API void UiAppEndFrame(UiApp* app, WGPURenderPassEncoder pass) {
     if (!app || !pass) return;
     app->ui.EndFrame(pass);
 }
 
-extern "C" APPSHELL_UI_API uint8_t UiAppConsumeResizeRequest(UiApp* app, uint32_t* out_width,
+extern "C" CRYPTVAULT_UI_API uint8_t UiAppConsumeResizeRequest(UiApp* app, uint32_t* out_width,
                                                                 uint32_t* out_height) {
     if (!app || !out_width || !out_height || !app->state.resize_requested) {
         return 0;
@@ -5072,7 +5072,7 @@ extern "C" APPSHELL_UI_API uint8_t UiAppConsumeResizeRequest(UiApp* app, uint32_
     return 1;
 }
 
-extern "C" APPSHELL_UI_API uint8_t UiAppConsumeQuitRequest(UiApp* app) {
+extern "C" CRYPTVAULT_UI_API uint8_t UiAppConsumeQuitRequest(UiApp* app) {
     if (!app || !app->state.quit_requested) {
         return 0;
     }
@@ -5080,7 +5080,7 @@ extern "C" APPSHELL_UI_API uint8_t UiAppConsumeQuitRequest(UiApp* app) {
     return 1;
 }
 
-extern "C" APPSHELL_UI_API uint8_t UiAppGetAlwaysOnTop(UiApp* app) {
+extern "C" CRYPTVAULT_UI_API uint8_t UiAppGetAlwaysOnTop(UiApp* app) {
     return (app && app->state.always_on_top) ? 1 : 0;
 }
 
@@ -5095,7 +5095,7 @@ extern "C" APPSHELL_UI_API uint8_t UiAppGetAlwaysOnTop(UiApp* app) {
 // the icon meant to trigger it) that weren't obvious from code review
 // alone. Kept as ordinary dev tooling going forward (see
 // debug_repro's own header comment) rather than deleted after one use.
-extern "C" APPSHELL_UI_API void UiAppDebugDump(UiApp* app, char* buf, int buf_size) {
+extern "C" CRYPTVAULT_UI_API void UiAppDebugDump(UiApp* app, char* buf, int buf_size) {
     if (!app || !buf || buf_size <= 0) return;
     std::string s;
     s += "screen=" + std::to_string(static_cast<int>(app->state.screen));

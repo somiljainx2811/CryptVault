@@ -1,17 +1,17 @@
-#ifndef APPSHELL_UI_APP_UI_H
-#define APPSHELL_UI_APP_UI_H
+#ifndef CRYPTVAULT_UI_APP_UI_H
+#define CRYPTVAULT_UI_APP_UI_H
 
 #include <cstdint>
 #include "wgpu.h"
 
 #if defined(_WIN32)
   #if defined(CRYPTVAULT_UI_BUILD)
-    #define APPSHELL_UI_API __declspec(dllexport)
+    #define CRYPTVAULT_UI_API __declspec(dllexport)
   #else
-    #define APPSHELL_UI_API __declspec(dllimport)
+    #define CRYPTVAULT_UI_API __declspec(dllimport)
   #endif
 #else
-  #define APPSHELL_UI_API __attribute__((visibility("default")))
+  #define CRYPTVAULT_UI_API __attribute__((visibility("default")))
 #endif
 
 struct UiApp;
@@ -80,12 +80,12 @@ struct UiAppInput {
 };
 
 extern "C" {
-APPSHELL_UI_API UiApp* UiAppCreate(WGPUDevice device, WGPUQueue queue,
+CRYPTVAULT_UI_API UiApp* UiAppCreate(WGPUDevice device, WGPUQueue queue,
                                     WGPUTextureFormat surface_format);
-APPSHELL_UI_API void UiAppDestroy(UiApp* app);
-APPSHELL_UI_API void UiAppBeginFrame(UiApp* app, uint32_t width, uint32_t height,
+CRYPTVAULT_UI_API void UiAppDestroy(UiApp* app);
+CRYPTVAULT_UI_API void UiAppBeginFrame(UiApp* app, uint32_t width, uint32_t height,
                                      const UiAppInput* input);
-APPSHELL_UI_API void UiAppEndFrame(UiApp* app, WGPURenderPassEncoder pass);
+CRYPTVAULT_UI_API void UiAppEndFrame(UiApp* app, WGPURenderPassEncoder pass);
 
 // One-shot: returns 1 and writes the requested window size to
 // *out_width/*out_height if the resize-toggle button (top-left
@@ -94,20 +94,20 @@ APPSHELL_UI_API void UiAppEndFrame(UiApp* app, WGPURenderPassEncoder pass);
 // otherwise. The request is cleared as soon as it's read, so this
 // should be polled once per frame (see main.cpp) - only main.cpp can
 // act on it, since it's the only side that owns the actual OS window.
-APPSHELL_UI_API uint8_t UiAppConsumeResizeRequest(UiApp* app, uint32_t* out_width, uint32_t* out_height);
+CRYPTVAULT_UI_API uint8_t UiAppConsumeResizeRequest(UiApp* app, uint32_t* out_width, uint32_t* out_height);
 
 // One-shot: returns 1 if the app should quit (Settings' QUIT button,
 // or the border right-click menu's CLOSE) - cleared as soon as it's
 // read, same "poll once per frame" contract as
 // UiAppConsumeResizeRequest above. Only main.cpp can act on it
 // (Window::RequestClose owns the real GLFW window).
-APPSHELL_UI_API uint8_t UiAppConsumeQuitRequest(UiApp* app);
+CRYPTVAULT_UI_API uint8_t UiAppConsumeQuitRequest(UiApp* app);
 
 // NOT one-shot, unlike the two functions above - returns the
 // currently-desired "always on top" state (see the border right-click
 // menu's ALWAYS ON TOP row) so main.cpp can poll it every frame and
 // call Window::SetAlwaysOnTop only when it actually changes.
-APPSHELL_UI_API uint8_t UiAppGetAlwaysOnTop(UiApp* app);
+CRYPTVAULT_UI_API uint8_t UiAppGetAlwaysOnTop(UiApp* app);
 }
 
 #endif

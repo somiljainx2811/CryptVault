@@ -6,7 +6,7 @@
 
 #include <cstdio>
 
-namespace appshell {
+namespace cryptvault {
 
 namespace {
 
@@ -149,4 +149,4 @@ void Window::RequestClose() {
     glfwSetWindowShouldClose(window_, GLFW_TRUE);
 }
 
-}  // namespace appshell
+}  // namespace cryptvault

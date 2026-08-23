@@ -19,7 +19,7 @@
 
 #include <cstdint>
 
-namespace appshell {
+namespace cryptvault {
 
 // Each glyph is 7 rows; each row's low 5 bits are columns
 // left(bit4)-to-right(bit0), 1 = pixel on.
@@ -98,6 +98,6 @@ inline const Glyph5x7* FindGlyph5x7(char ch) {
     return nullptr;
 }
 
-}  // namespace appshell
+}  // namespace cryptvault
 
 #endif  // SCROLLSNAP_SHELL_UI_FONT5X7_H

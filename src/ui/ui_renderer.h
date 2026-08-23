@@ -15,8 +15,8 @@
 // converts to NDC internally per vertex, so there's no shader-side
 // uniform buffer or projection matrix to wire up.
 
-#ifndef APPSHELL_UI_UI_RENDERER_H
-#define APPSHELL_UI_UI_RENDERER_H
+#ifndef CRYPTVAULT_UI_UI_RENDERER_H
+#define CRYPTVAULT_UI_UI_RENDERER_H
 
 #include <cstdint>
 #include <string>
@@ -24,7 +24,7 @@
 
 #include "wgpu.h"
 
-namespace appshell {
+namespace cryptvault {
 
 struct UiColor {
     float r, g, b, a;
@@ -369,6 +369,6 @@ private:
     std::string last_error_;
 };
 
-}  // namespace appshell
+}  // namespace cryptvault
 
-#endif  // APPSHELL_UI_UI_RENDERER_H
+#endif  // CRYPTVAULT_UI_UI_RENDERER_H

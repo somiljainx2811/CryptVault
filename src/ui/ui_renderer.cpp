@@ -24,7 +24,7 @@
 
 #include "ui/font5x7.h"
 
-namespace appshell {
+namespace cryptvault {
 
 namespace {
 
@@ -128,7 +128,7 @@ bool UiRenderer::Create(WGPUDevice device, WGPUQueue queue, WGPUTextureFormat su
 
     WGPUShaderModuleDescriptor shader_descriptor{};
     shader_descriptor.nextInChain = reinterpret_cast<WGPUChainedStruct*>(&wgsl_source);
-    shader_descriptor.label = ToStringView("AppShellUiShader");
+    shader_descriptor.label = ToStringView("CryptVaultUiShader");
 
     shader_module_ = wgpuDeviceCreateShaderModule(device_, &shader_descriptor);
     if (!shader_module_) {
@@ -138,7 +138,7 @@ bool UiRenderer::Create(WGPUDevice device, WGPUQueue queue, WGPUTextureFormat su
 
     WGPUPipelineLayoutDescriptor layout_descriptor{};
     layout_descriptor.nextInChain = nullptr;
-    layout_descriptor.label = ToStringView("AppShellUiPipelineLayout");
+    layout_descriptor.label = ToStringView("CryptVaultUiPipelineLayout");
     layout_descriptor.bindGroupLayoutCount = 0;
     layout_descriptor.bindGroupLayouts = nullptr;
 
@@ -193,7 +193,7 @@ bool UiRenderer::Create(WGPUDevice device, WGPUQueue queue, WGPUTextureFormat su
 
     WGPURenderPipelineDescriptor pipeline_descriptor{};
     pipeline_descriptor.nextInChain = nullptr;
-    pipeline_descriptor.label = ToStringView("AppShellUiPipeline");
+    pipeline_descriptor.label = ToStringView("CryptVaultUiPipeline");
     pipeline_descriptor.layout = pipeline_layout_;
     pipeline_descriptor.vertex.nextInChain = nullptr;
     pipeline_descriptor.vertex.module = shader_module_;
@@ -286,7 +286,7 @@ bool UiRenderer::CreateImagePipeline() {
 
     WGPUShaderModuleDescriptor shader_descriptor{};
     shader_descriptor.nextInChain = reinterpret_cast<WGPUChainedStruct*>(&wgsl_source);
-    shader_descriptor.label = ToStringView("AppShellUiImageShader");
+    shader_descriptor.label = ToStringView("CryptVaultUiImageShader");
 
     image_shader_module_ = wgpuDeviceCreateShaderModule(device_, &shader_descriptor);
     if (!image_shader_module_) {
@@ -307,7 +307,7 @@ bool UiRenderer::CreateImagePipeline() {
 
     WGPUBindGroupLayoutDescriptor bind_group_layout_descriptor{};
     bind_group_layout_descriptor.nextInChain = nullptr;
-    bind_group_layout_descriptor.label = ToStringView("AppShellUiImageBindGroupLayout");
+    bind_group_layout_descriptor.label = ToStringView("CryptVaultUiImageBindGroupLayout");
     bind_group_layout_descriptor.entryCount = 2;
     bind_group_layout_descriptor.entries = bind_layout_entries;
 
@@ -319,7 +319,7 @@ bool UiRenderer::CreateImagePipeline() {
 
     WGPUPipelineLayoutDescriptor layout_descriptor{};
     layout_descriptor.nextInChain = nullptr;
-    layout_descriptor.label = ToStringView("AppShellUiImagePipelineLayout");
+    layout_descriptor.label = ToStringView("CryptVaultUiImagePipelineLayout");
     layout_descriptor.bindGroupLayoutCount = 1;
     layout_descriptor.bindGroupLayouts = &image_bind_group_layout_;
 
@@ -380,7 +380,7 @@ bool UiRenderer::CreateImagePipeline() {
 
     WGPURenderPipelineDescriptor pipeline_descriptor{};
     pipeline_descriptor.nextInChain = nullptr;
-    pipeline_descriptor.label = ToStringView("AppShellUiImagePipeline");
+    pipeline_descriptor.label = ToStringView("CryptVaultUiImagePipeline");
     pipeline_descriptor.layout = image_pipeline_layout_;
     pipeline_descriptor.vertex.nextInChain = nullptr;
     pipeline_descriptor.vertex.module = image_shader_module_;
@@ -410,7 +410,7 @@ bool UiRenderer::CreateImagePipeline() {
 
     WGPUSamplerDescriptor sampler_descriptor{};
     sampler_descriptor.nextInChain = nullptr;
-    sampler_descriptor.label = ToStringView("AppShellUiIconSampler");
+    sampler_descriptor.label = ToStringView("CryptVaultUiIconSampler");
     sampler_descriptor.addressModeU = WGPUAddressMode_ClampToEdge;
     sampler_descriptor.addressModeV = WGPUAddressMode_ClampToEdge;
     sampler_descriptor.addressModeW = WGPUAddressMode_ClampToEdge;
@@ -504,7 +504,7 @@ bool UiRenderer::CreateRoundedRectPipeline() {
 
     WGPUShaderModuleDescriptor shader_descriptor{};
     shader_descriptor.nextInChain = reinterpret_cast<WGPUChainedStruct*>(&wgsl_source);
-    shader_descriptor.label = ToStringView("AppShellUiRoundedRectShader");
+    shader_descriptor.label = ToStringView("CryptVaultUiRoundedRectShader");
 
     rounded_rect_shader_module_ = wgpuDeviceCreateShaderModule(device_, &shader_descriptor);
     if (!rounded_rect_shader_module_) {
@@ -515,7 +515,7 @@ bool UiRenderer::CreateRoundedRectPipeline() {
     // No textures/uniforms - same empty layout as the solid pipeline.
     WGPUPipelineLayoutDescriptor layout_descriptor{};
     layout_descriptor.nextInChain = nullptr;
-    layout_descriptor.label = ToStringView("AppShellUiRoundedRectPipelineLayout");
+    layout_descriptor.label = ToStringView("CryptVaultUiRoundedRectPipelineLayout");
     layout_descriptor.bindGroupLayoutCount = 0;
     layout_descriptor.bindGroupLayouts = nullptr;
 
@@ -579,7 +579,7 @@ bool UiRenderer::CreateRoundedRectPipeline() {
 
     WGPURenderPipelineDescriptor pipeline_descriptor{};
     pipeline_descriptor.nextInChain = nullptr;
-    pipeline_descriptor.label = ToStringView("AppShellUiRoundedRectPipeline");
+    pipeline_descriptor.label = ToStringView("CryptVaultUiRoundedRectPipeline");
     pipeline_descriptor.layout = rounded_rect_pipeline_layout_;
     pipeline_descriptor.vertex.nextInChain = nullptr;
     pipeline_descriptor.vertex.module = rounded_rect_shader_module_;
@@ -613,7 +613,7 @@ bool UiRenderer::CreateRoundedRectPipeline() {
 int UiRenderer::UploadTexture(const unsigned char* pixels, int width, int height, const std::string& label) {
     WGPUTextureDescriptor texture_descriptor{};
     texture_descriptor.nextInChain = nullptr;
-    texture_descriptor.label = ToStringView("AppShellUiIconTexture");
+    texture_descriptor.label = ToStringView("CryptVaultUiIconTexture");
     texture_descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
     texture_descriptor.dimension = WGPUTextureDimension_2D;
     texture_descriptor.size = WGPUExtent3D{static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
@@ -647,7 +647,7 @@ int UiRenderer::UploadTexture(const unsigned char* pixels, int width, int height
 
     WGPUTextureViewDescriptor view_descriptor{};
     view_descriptor.nextInChain = nullptr;
-    view_descriptor.label = ToStringView("AppShellUiIconTextureView");
+    view_descriptor.label = ToStringView("CryptVaultUiIconTextureView");
     view_descriptor.format = WGPUTextureFormat_RGBA8Unorm;
     view_descriptor.dimension = WGPUTextureViewDimension_2D;
     view_descriptor.baseMipLevel = 0;
@@ -672,7 +672,7 @@ int UiRenderer::UploadTexture(const unsigned char* pixels, int width, int height
 
     WGPUBindGroupDescriptor bind_group_descriptor{};
     bind_group_descriptor.nextInChain = nullptr;
-    bind_group_descriptor.label = ToStringView("AppShellUiIconBindGroup");
+    bind_group_descriptor.label = ToStringView("CryptVaultUiIconBindGroup");
     bind_group_descriptor.layout = image_bind_group_layout_;
     bind_group_descriptor.entryCount = 2;
     bind_group_descriptor.entries = bind_entries;
@@ -815,7 +815,7 @@ void UiRenderer::EnsureVertexCapacity(size_t vertex_count) {
 
     WGPUBufferDescriptor buffer_descriptor{};
     buffer_descriptor.nextInChain = nullptr;
-    buffer_descriptor.label = ToStringView("AppShellUiVertexBuffer");
+    buffer_descriptor.label = ToStringView("CryptVaultUiVertexBuffer");
     buffer_descriptor.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst;
     buffer_descriptor.size = new_capacity * sizeof(Vertex);
     buffer_descriptor.mappedAtCreation = false;
@@ -841,7 +841,7 @@ void UiRenderer::EnsureRoundedRectVertexCapacity(size_t vertex_count) {
 
     WGPUBufferDescriptor buffer_descriptor{};
     buffer_descriptor.nextInChain = nullptr;
-    buffer_descriptor.label = ToStringView("AppShellUiRoundedRectVertexBuffer");
+    buffer_descriptor.label = ToStringView("CryptVaultUiRoundedRectVertexBuffer");
     buffer_descriptor.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst;
     buffer_descriptor.size = new_capacity * sizeof(RoundedRectVertex);
     buffer_descriptor.mappedAtCreation = false;
@@ -1096,7 +1096,7 @@ void UiRenderer::EndFrame(WGPURenderPassEncoder pass) {
             }
             WGPUBufferDescriptor buffer_descriptor{};
             buffer_descriptor.nextInChain = nullptr;
-            buffer_descriptor.label = ToStringView("AppShellUiImageVertexBuffer");
+            buffer_descriptor.label = ToStringView("CryptVaultUiImageVertexBuffer");
             buffer_descriptor.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst;
             buffer_descriptor.size = new_capacity * sizeof(ImageVertex);
             buffer_descriptor.mappedAtCreation = false;
@@ -1185,4 +1185,4 @@ void UiRenderer::EndFrame(WGPURenderPassEncoder pass) {
     }
 }
 
-}  // namespace appshell
+}  // namespace cryptvault
