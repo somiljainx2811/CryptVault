@@ -1,8 +1,3 @@
-// Exercises vault_store end-to-end against the real filesystem in a
-// temp directory - no mocking of libsodium or the filesystem. Prints
-// each check as it runs and exits non-zero on the first failure, so
-// `./vault_store_test && echo ALL PASSED` is a meaningful thing to
-// run in CI or by hand.
 #include "vault/vault_store.h"
 
 #include <sodium.h>
@@ -18,49 +13,44 @@
 namespace fs = std::filesystem;
 
 namespace {
+    int g_checks = 0;
+    int g_failures = 0;
 
-int g_checks = 0;
-int g_failures = 0;
-
-void Check(bool condition, const std::string& description) {
-    ++g_checks;
-    if (condition) {
-        std::printf("  [ok] %s\n", description.c_str());
-    } else {
-        ++g_failures;
-        std::printf("  [FAIL] %s\n", description.c_str());
+    void Check(bool condition, const std::string& description) {
+        ++g_checks;
+        if (condition) {
+            std::printf("  [ok] %s\n", description.c_str());
+        } else {
+            ++g_failures;
+            std::printf("  [FAIL] %s\n", description.c_str());
+        }
     }
-}
 
-std::vector<uint8_t> StringToBytes(const std::string& s) { return std::vector<uint8_t>(s.begin(), s.end()); }
-std::string BytesToString(const std::vector<uint8_t>& b) { return std::string(b.begin(), b.end()); }
+    std::vector<uint8_t> StringToBytes(const std::string& s) { return std::vector<uint8_t>(s.begin(), s.end()); }
+    std::string BytesToString(const std::vector<uint8_t>& b) { return std::string(b.begin(), b.end()); }
 
-// Reads every regular file under `dir` (recursively) into one
-// concatenated buffer - used to sanity-check that a plaintext needle
-// (a real filename, a real file's content) is nowhere on disk at all,
-// not just absent from one specific file.
-std::vector<uint8_t> SlurpDirectory(const fs::path& dir) {
-    std::vector<uint8_t> all;
-    for (auto& entry : fs::recursive_directory_iterator(dir)) {
-        if (!entry.is_regular_file()) continue;
-        std::ifstream f(entry.path(), std::ios::binary);
-        std::vector<uint8_t> contents((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-        all.insert(all.end(), contents.begin(), contents.end());
+    std::vector<uint8_t> SlurpDirectory(const fs::path& dir) {
+        std::vector<uint8_t> all;
+        for (auto& entry : fs::recursive_directory_iterator(dir)) {
+            if (!entry.is_regular_file()) continue;
+            std::ifstream f(entry.path(), std::ios::binary);
+            std::vector<uint8_t> contents((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            all.insert(all.end(), contents.begin(), contents.end());
+        }
+        return all;
     }
-    return all;
-}
 
-bool ContainsSubsequence(const std::vector<uint8_t>& haystack, const std::string& needle) {
-    if (needle.empty() || haystack.size() < needle.size()) return false;
-    return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end()) != haystack.end();
-}
+    bool ContainsSubsequence(const std::vector<uint8_t>& haystack, const std::string& needle) {
+        if (needle.empty() || haystack.size() < needle.size()) return false;
+        return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end()) != haystack.end();
+    }
 
-}  // namespace
+}
 
 int main() {
     fs::path test_root = fs::temp_directory_path() / "cryptvault_store_test";
     std::error_code ec;
-    fs::remove_all(test_root, ec);  // start clean even if a previous run crashed mid-test
+    fs::remove_all(test_root, ec);
     fs::create_directories(test_root, ec);
     fs::path vault_path = test_root / "MySecretVault";
 
@@ -72,7 +62,7 @@ int main() {
 
     std::printf("=== 1. Create a vault, add a folder and a file ===\n");
     std::string error;
-    std::string folder_blob_hint;  // not used for lookups, just a readability aid below
+    std::string folder_blob_hint; 
     {
         auto vault = vaultstore::CreateVault(vault_path.string(), kPassword, error);
         Check(vault != nullptr, "CreateVault succeeds: " + error);
@@ -92,7 +82,7 @@ int main() {
         Check(fs::exists(vault_path / "manifest.enc"), "manifest.enc exists on disk");
         Check(fs::exists(vault_path / "blobs") && !fs::is_empty(vault_path / "blobs"),
               "blobs/ exists and has at least one file");
-    }  // vault destructed here - master key should be scrubbed, nothing left open
+    }
 
     std::printf("\n=== 2. Confirm nothing readable is sitting on disk ===\n");
     {
@@ -104,8 +94,6 @@ int main() {
         Check(!ContainsSubsequence(everything, kSecretContent),
               "file content is NOT present in plaintext anywhere on disk");
 
-        // The actual on-disk blob filename should be an opaque hex
-        // id, not the real name.
         bool found_named_blob = false;
         for (auto& entry : fs::directory_iterator(vault_path / "blobs")) {
             if (entry.path().filename().string().find("social_security") != std::string::npos) {
@@ -203,8 +191,6 @@ int main() {
         Check(renamed, "Rename succeeds: " + rename_error);
         Check(folder.name == "Tax Documents 2026", "in-memory tree reflects the rename");
 
-        // Reopen fresh to make sure the rename was actually persisted
-        // to manifest.enc, not just held in memory.
         std::string reopen_error;
         auto reopened = vaultstore::OpenVault(vault_path.string(), "a brand new password entirely", reopen_error);
         Check(reopened != nullptr, "reopen after rename: " + reopen_error);

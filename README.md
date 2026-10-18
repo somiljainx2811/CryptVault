@@ -31,6 +31,7 @@
 ## Table of Contents
 
 - [What is CryptVault?](#what-is-cryptvault)
+- [Two Sides: Files and Vaults](#two-sides-files-and-vaults)
 - [Why This Project Exists](#why-this-project-exists)
 - [Feature Overview](#feature-overview)
 - [Architecture](#architecture)
@@ -51,7 +52,7 @@
 
 ## What is CryptVault?
 
-CryptVault is a small, frameless desktop application for Windows and Linux that stores files inside password-protected, encrypted vaults on your own disk. There is no cloud component, no account, and no background service — a vault is just a directory, and the app is a single executable that knows how to read and write it.
+CryptVault is a native Linux file explorer (with a Windows build of the vault half) that also stores files inside password-protected, encrypted vaults on your own disk. There is no cloud component, no account, and no background service — a vault is just a directory, and the app is a single executable that knows how to read and write it.
 
 Under the hood it's an experiment in building a native app shell the hard way: no Electron, no Chromium, no game engine, no garbage collector. A GLFW window, a wgpu-native GPU surface, and a hand-written immediate-mode UI drawn with a 5x7 bitmap font — the whole rendering stack is a few thousand lines of C++ that talk to the GPU every frame.
 
@@ -60,6 +61,59 @@ Files  →  XChaCha20-Poly1305 (libsodium)  →  opaque blobs on disk
 ```
 
 Open a vault with the right password and you see folders, tiles, and a tab bar. Anyone without the password sees a directory of randomly-named binary blobs and one small metadata file — no filenames, no folder structure, no file sizes leak without the key.
+
+<br/>
+
+## Two Sides: Files and Vaults
+
+CryptVault is a native Linux file explorer with a locked half.
+
+| | **Files** (unrestricted) | **Vaults** (restricted) |
+|---|---|---|
+| What it is | A normal file explorer over your real filesystem | Password-locked, encrypted vaults |
+| Shows | Home, XDG folders, mounted drives, Trash | Only what you've unlocked |
+| Operations | Open, rename, copy/cut/paste, new folder/file, move to Trash, restore, hidden files, sorting | Add/read/rename/delete files inside a vault |
+| Switch | `FILES` / `VAULTS` pills in the status bar, or the command palette | |
+
+The two sides are kept apart on purpose: the explorer never lists, reads or writes inside a vault - a vault folder just shows up with a lock icon, and opening it hands over to the vault side, which asks for the password. **Leaving the vault side locks every vault** (sessions and keys dropped, decrypted temp files deleted); turn that off from the command palette with `LOCK VAULTS ON LEAVE`.
+
+**Selecting and acting:** click to select, Ctrl+click toggles, Shift+click selects a range, Ctrl+A selects all. Ctrl+C / Ctrl+X / Ctrl+V copy, cut and paste (Ctrl+Shift+C copies the paths as text); Delete moves to Trash; F2 renames; Enter opens; Backspace goes up; arrows move the selection; Ctrl+L (or click the address bar) types a path. Esc closes the topmost popup first and only quits when nothing is open. Dropping files from another app copies them into the open folder.
+
+**Find:** Ctrl+F opens a find bar - typing filters the current folder live, Enter searches all subfolders (results show their relative path; right-click > SHOW IN FOLDER jumps there). Folders that are vaults are never searched inside.
+
+**Encrypt into a vault:** right-click files or folders (or a multi-selection) > ENCRYPT INTO VAULT. The app switches to the vault side; open a vault and a folder, then choose ENCRYPT HERE. A separate ENCRYPT AND DELETE ORIGINALS button needs a second click and only deletes after every file encrypted successfully (it is a plain delete, not a secure wipe).
+
+**Names in any language:** ASCII uses the built-in pixel font; everything else is drawn from TrueType fonts found on your system and **shaped with HarfBuzz**: Arabic letters join and run right to left, Hebrew reads right to left, Devanagari/Bengali/Tamil/Thai and the other complex scripts get their conjuncts and vowel signs, and accents/Greek/Cyrillic/CJK just work. The fonts are discovered, not bundled: install the usual Noto fonts (Fedora: `google-noto-sans-fonts`, `google-noto-sans-arabic-fonts`, `google-noto-sans-devanagari-fonts`, `google-noto-sans-cjk-fonts`, ...; DejaVu also covers Arabic/Hebrew) or point `CRYPTVAULT_FONT=/path/to/font.ttf` at one. **Colour emoji** (including family, skin-tone and flag sequences) are drawn from Noto Color Emoji if it is installed (Fedora `google-noto-color-emoji-fonts`, Debian/Ubuntu `fonts-noto-color-emoji`; only the CBDT bitmap build is read - the newer COLRv1 vector build is not, and without a usable colour font emoji fall back to monochrome symbols). Mixed-direction names use a compact implementation of the Unicode bidirectional algorithm, so an Arabic word followed by a year and `.pdf` is laid out the way a browser would. HarfBuzz is used if your system has it (`harfbuzz-devel`) and otherwise built from source; `-DCRYPTVAULT_ENABLE_HARFBUZZ=OFF` builds without it (then non-ASCII text is drawn one character at a time, with Hebrew/Arabic reordered but unjoined).
+
+**Thumbnails:** PNG/JPEG/BMP/GIF/TGA files - and videos, if `ffmpeg` is installed - show a small preview. They are produced by a background worker (scrolling never stalls), for on-screen tiles only, and capped (least recently shown are freed). Toggle with the `THUMBNAILS` palette command.
+
+**Video preview on hover (like Dolphin):** rest the pointer on a video file for a moment and a larger (320x180) muted, looping preview plays in a popup beside the cursor. It needs the `ffmpeg` command (optional - there is no codec library inside CryptVault; without it videos just keep the plain icon and you get a one-time hint). `ffmpeg` runs as a separate process started only while you hover, and is killed when you move away or quit. Install it with `sudo dnf install ffmpeg-free` (limited codecs) or the full `ffmpeg` from RPM Fusion; `CRYPTVAULT_FFMPEG=/path/to/ffmpeg` picks another binary. Toggle with `VIDEO PREVIEW ON HOVER` in the command palette. Only the explorer side ever does this - nothing inside a vault is decoded for display.
+
+**Trash on every drive:** trashing a file on another mounted drive (USB disk, second SSD, ...) puts it in that drive's own trash (`.Trash-UID`, per the freedesktop spec) - a rename instead of a slow copy to your home drive - and the Trash view / `cryptvault trash list` show everything together.
+
+**Moving files between CryptVault and other apps:** dragging files *into* CryptVault works. Dragging *out* is not possible - the windowing library (GLFW) cannot start a drag - so use the clipboard instead: Ctrl+C / Ctrl+X also publish the files to the system clipboard, and Ctrl+V pastes files copied in Dolphin, GNOME Files, Thunar and so on. This uses `wl-copy`/`wl-paste` (package `wl-clipboard`) on Wayland or `xclip` on X11; without them copy/paste still works inside CryptVault and you get a one-time hint. The clipboard format follows your desktop (`x-special/gnome-copied-files` for GNOME/XFCE/MATE/Cinnamon, `text/uri-list` for KDE/LXQt; override with `CRYPTVAULT_CLIPBOARD_FORMAT=gnome|uri-list`). COPY PATH (right-click, or Ctrl+Shift+C) puts the paths on the clipboard as plain text.
+
+### From the terminal (bash / zsh)
+
+The same binary works without a window. Nothing stays unlocked between commands.
+
+```bash
+cryptvault                       # open the explorer      cryptvault ~/Downloads   # ...at a folder
+cryptvault gui --vaults          # start on the vault side
+
+cryptvault ls -la ~/Projects     # list (vault folders are marked)
+cryptvault trash put old.zip     # freedesktop Trash - shows up in GNOME Files / Dolphin too
+cryptvault trash list; cryptvault trash restore old.zip
+
+cryptvault vault create secrets                 # prompts for a password (no echo)
+cryptvault vault add secrets:/docs ~/taxes --delete-originals
+cryptvault vault tree secrets
+cryptvault vault get secrets:/docs/tax.pdf > /tmp/tax.pdf
+echo "note" | cryptvault vault put secrets:/notes/today.txt
+cryptvault vault --help          # and: cryptvault --help
+```
+
+Passwords come from a hidden prompt, or non-interactively from `--password-fd N`, `--password-file F`, or `$CRYPTVAULT_PASSWORD`. Exit codes: 0 ok, 1 error, 2 usage, 3 wrong password. Shell completion: `cryptvault completion bash|zsh` (installed automatically by `cmake --install`).
 
 <br/>
 
@@ -280,20 +334,28 @@ CryptVault/
 
 ## Getting Started
 
-### Prerequisites
-
-- CMake 3.20+
-- A C++17 compiler (MSVC on Windows, GCC/Clang on Linux)
-- The matching wgpu-native binary for your platform (see the comment at the top of `CMakeLists.txt` for the pinned version and where it's expected on disk)
-
-### Build
+### Quick start (Fedora)
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release
+scripts/install-deps.sh                 # dnf/apt/pacman/zypper - or see the list in CMakeLists.txt
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+ctest --test-dir build --output-on-failure
+sudo cmake --install build              # or: cmake --install build --prefix ~/.local
+cryptvault                              # opens the explorer; `cryptvault --help` for the terminal commands
 ```
 
-Icon assets are copied next to the built binaries automatically as part of the build. On first run, launch the resulting `cryptvault` executable — no separate install step, no service to start.
+Needs CMake 3.20+ and a C++17 compiler. Anything not found on the system (libsodium, GLFW >= 3.4, cpp-httplib) is fetched and built automatically; wgpu-native and `stb_image.h` are downloaded as pinned, checksum-verified files at configure time (x86_64 and aarch64 Linux). To use your own copies: `-DWGPU_NATIVE_DIR=...`, `-DSTB_DIR=...`, or `-DCRYPTVAULT_USE_SYSTEM_LIBS=OFF`.
+
+**Terminal-only build** (no GPU stack, no GLFW, nothing graphical - runs over SSH or in a container):
+
+```bash
+cmake -B build -DCRYPTVAULT_BUILD_GUI=OFF && cmake --build build   # -> build/cryptvault-cli
+```
+
+### Display servers
+
+The window picks **native Wayland** when the session is Wayland and **X11** otherwise (GLFW >= 3.4 decides at runtime and falls back). Force one with `CRYPTVAULT_PLATFORM=x11` or `CRYPTVAULT_PLATFORM=wayland`. On Wayland the window uses compositor decorations instead of the custom frameless border, because Wayland clients can't move their own window or pin it on top. High-DPI scales (2x etc.) are handled.
 
 <br/>
 
@@ -301,9 +363,11 @@ Icon assets are copied next to the built binaries automatically as part of the b
 
 | Target | Purpose |
 |---|---|
-| `cryptvault` | The application itself |
-| `debug_repro` | A diagnostic harness that drives the UI with scripted synthetic input (no real mouse/keyboard) to reproduce reported bugs deterministically, and inspect internal state via a debug dump |
-| `vault_store_test` | Headless test/demo executable for the encryption engine alone — no GLFW, no wgpu, no UI dependency at all |
+| `cryptvault` | The application: opens the explorer window, or runs a terminal command when given one (`cryptvault ls`, `cryptvault vault ...`) |
+| `cryptvault-cli` | Terminal-only build: libsodium + the C++ standard library, nothing graphical |
+| `vault_store_test` | Headless test for the encryption engine alone |
+| `fs_ops_test` | Headless test for the file-explorer engine (listing, copy/move, freedesktop Trash) |
+| `debug_repro` | Opt-in (`-DCRYPTVAULT_BUILD_DEBUG_REPRO=ON`): drives the UI with scripted synthetic input to reproduce bugs |
 
 <br/>
 
@@ -329,25 +393,43 @@ Icon assets are copied next to the built binaries automatically as part of the b
 
 ## Known Limitations
 
-- Argon2id currently runs at INTERACTIVE cost, synchronously on the UI thread — unlocking a vault briefly blocks the UI; moving this off-thread would allow raising the cost parameters without a visible stall.
-- No macOS build target yet — the platform-specific folder picker and "open with OS default app" code only has Windows and Linux implementations.
-- `debug_repro` is a temporary diagnostic tool checked into the main build graph, not gated behind a separate build option.
+- Argon2id currently runs at INTERACTIVE cost, synchronously on the UI thread - unlocking a vault briefly blocks the UI.
+- Non-ASCII text needs system fonts that cover the script (see above); a script with no installed font draws as a gap. Colour emoji need the CBDT build of Noto Color Emoji (not COLRv1/SVG fonts such as Twemoji). The bidi layout covers the common cases (words, numbers, punctuation, brackets) but not explicit embedding/override/isolate characters or bracket pairing. ASCII stays in the pixel font and is shown in capitals.
+- Video previews need the `ffmpeg` command; the first thumbnail of a long video can take a second or two. Image thumbnails use a 64 px texture, so they look soft on large tiles.
+- Subfolder search is bounded (500 results / ~150k entries visited) and runs in the background, but a search of a huge tree still takes a while to finish.
+- No drag-out of files to other apps (GLFW can't start a drag) - use the file clipboard or COPY PATH. Pasting files copied in other apps on Wayland relies on `wl-paste`, which hung intermittently on the headless test compositor (sway); copying out and the X11 clipboard were verified, and on a timeout CryptVault falls back to its own clipboard.
+- Fractional display scaling on Wayland works (GLFW 3.4 implements `wp_fractional_scale`; checked at 1.25x, 1.5x, 2x and 2.5x), but only on compositors that offer that protocol - others fall back to integer scaling.
+- Vault files are read fully into memory when added/opened, so very large files need that much RAM.
+- Native Wayland was verified under sway (headless) only; GNOME/KDE sessions have not been tried. Headless Weston crashes inside GLFW 3.4 because it advertises no input seat - a GLFW issue, not CryptVault's.
+- No macOS build target yet.
 
 <br/>
 
 ## Testing
 
-`vault_store_test` exercises the encryption engine directly, independent of any GPU or windowing code — it can build and run in a plain headless environment to verify creation, unlock, folder/file operations, and password changes round-trip correctly before (or without) touching anything screen-related.
+`ctest --test-dir build --output-on-failure` runs three headless suites (no GPU or display needed):
 
-`debug_repro` drives the real UI code through the same entry points `main.cpp` uses, with a scripted sequence of synthetic input frames (clicks, double-clicks, typed text) instead of live mouse/keyboard events, so a reported UI bug can be reproduced the same way every time and inspected via its debug-dump output rather than guessed at from reading code alone.
+- `vault_store` - the encryption engine: create, unlock, folder/file operations, password change, tamper checks.
+- `fs_ops` - the explorer engine: sorting, symlinks, vault detection, copy/move/rename, and the freedesktop Trash (round-tripping odd file names, restore without overwrite), all in a sandboxed `$HOME`.
+- `cli_smoke` - the real `cryptvault-cli` binary end to end: file commands plus a full vault round trip (create, add folders, get, put, rename, delete, password sources, exit codes, "no plaintext on disk").
+
+`debug_repro` (opt-in) drives the real UI code with scripted input frames so a UI bug can be reproduced identically every time.
 
 <br/>
 
 ## Roadmap
 
+- [x] Non-ASCII file names (system TrueType fallback via stb_truetype)
+- [x] Explorer: multi-select, keyboard shortcuts, find/search, thumbnails
+- [x] "Encrypt into vault" from the explorer's context menu
+- [x] Per-volume trash, background thumbnails/search, hover video preview
+- [x] Complex-script shaping with HarfBuzz (Arabic joining, Indic, Thai, ...) and fractional Wayland scaling
+- [x] Send/receive files via the system clipboard (stand-in for drag-out)
+- [x] Colour emoji (CBDT) and bidirectional layout
+- [ ] Real drag-and-drop out of the window. Not built on purpose: GLFW cannot start a drag, and doing it ourselves means a second Wayland protocol client (data-device + input serials, impossible to verify without a real compositor session) plus an XDND source for X11 - a large, risky change for something the file clipboard already covers. Revisit if the windowing layer is ever replaced.
 - [ ] Move Argon2id unlock off the UI thread, and raise the cost parameters once it is
+- [ ] Flatpak / AppImage / RPM packaging (needs `--filesystem=host` style access to behave as a file manager)
 - [ ] macOS support for the platform-specific folder picker / open-file code
-- [ ] Promote `debug_repro` behind an explicit, opt-in build option
 - [ ] Expand the third-party API surface (folder creation, delete, rename) if a real use case for it emerges
 
 <br/>

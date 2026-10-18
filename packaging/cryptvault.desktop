@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+Name=CryptVault
+GenericName=File Explorer
+Comment=Browse your files, and keep private ones in encrypted vaults
+Exec=cryptvault %U
+Icon=cryptvault
+Terminal=false
+Categories=System;FileTools;FileManager;Utility;Security;
+Keywords=files;explorer;encrypt;vault;
+StartupNotify=false
+# Not the default folder handler out of the box. To make it one:
+#   xdg-mime default cryptvault.desktop inode/directory
+MimeType=inode/directory;
+Actions=Vaults;
+
+[Desktop Action Vaults]
+Name=Open Vaults
+Exec=cryptvault gui --vaults

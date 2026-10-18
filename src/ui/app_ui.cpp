@@ -14,7 +14,13 @@
 #include <utility>
 #include <vector>
 
+#include <unordered_map>
 #include <httplib.h>
+
+#include "explorer/fs_ops.h"
+#include "platform/clipboard_files.h"
+#include "ui/background_worker.h"
+#include "ui/media_tools.h"
 #include <sodium.h>
 
 #ifdef _WIN32
@@ -175,6 +181,10 @@ constexpr cryptvault::UiColor kDangerHover{0.85f, 0.36f, 0.34f, 1.0f};
 // Filled in once at startup by LoadIcons(); -1 means "failed to load"
 // (DrawImage silently no-ops on a -1 handle, so a missing icon just
 // leaves a blank space rather than crashing).
+// Handle of the vault icon, so the explorer grid can badge vault folders
+// (TileIconFor has no access to the Icons struct).
+int g_vault_icon_handle = -1;
+
 struct Icons {
     int folder = -1;
     int vault = -1;
@@ -221,10 +231,41 @@ std::filesystem::path ExecutableDir() {
 #endif
 }
 
+// Where the shipped assets (icons, default background) live. Two
+// layouts are supported so the same binary works both ways:
+//   dev/build tree:  <exe dir>/assets            (CMake copies them there)
+//   installed:       <exe dir>/../share/cryptvault/assets   (/usr/share/...)
+// The first one that exists wins; falls back to the dev layout so a
+// missing-asset error message still names a sensible path.
+std::filesystem::path AssetsRoot() {
+    std::error_code ec;
+    std::filesystem::path dev = ExecutableDir() / "assets";
+    if (std::filesystem::exists(dev / "icons", ec)) return dev;
+    std::filesystem::path installed = (ExecutableDir() / ".." / "share" / "cryptvault" / "assets").lexically_normal();
+    if (std::filesystem::exists(installed / "icons", ec)) return installed;
+    return dev;
+}
+
+// Where user-added backgrounds are stored. In the dev layout that is
+// still <assets>/backgrounds (unchanged behavior); in an installed
+// layout /usr/share is read-only, so it moves to the per-user XDG data
+// dir instead.
+std::filesystem::path BackgroundsDir() {
+    std::error_code ec;
+    std::filesystem::path dev = ExecutableDir() / "assets";
+    if (std::filesystem::exists(dev / "icons", ec)) return dev / "backgrounds";
+    const char* xdg = std::getenv("XDG_DATA_HOME");
+    const char* home = std::getenv("HOME");
+    std::filesystem::path base = (xdg && *xdg) ? std::filesystem::path(xdg)
+                                               : std::filesystem::path(home ? home : ".") / ".local" / "share";
+    return base / "cryptvault" / "backgrounds";
+}
+
 bool LoadIcons(cryptvault::UiRenderer& ui, Icons& icons) {
-    std::filesystem::path assets = ExecutableDir() / "assets";
+    std::filesystem::path assets = AssetsRoot();
     icons.folder = ui.LoadIcon((assets / "icons" / "folder.png").string());
     icons.vault = ui.LoadIcon((assets / "icons" / "vault.png").string());
+    g_vault_icon_handle = icons.vault;
     icons.arrow_back = ui.LoadIcon((assets / "icons" / "arrow_back.png").string());
     icons.arrow_up = ui.LoadIcon((assets / "icons" / "arrow_up.png").string());
     icons.home = ui.LoadIcon((assets / "icons" / "home.png").string());
@@ -249,7 +290,7 @@ bool LoadIcons(cryptvault::UiRenderer& ui, Icons& icons) {
 
 // --- app state -----------------------------------------------------------
 
-enum class Screen { VaultList, VaultFolder };
+enum class Screen { Explorer, VaultList, VaultFolder };
 
 // A vault as CryptVault's own UI-level bookkeeping sees it: a display
 // name plus which real directory on disk it lives in (see
@@ -268,9 +309,105 @@ struct Vault {
     float hover_amount = 0.0f;  // see vaultstore::TreeNode::hover_amount's comment
 };
 
+// --- explorer state (the unrestricted side) -----------------------------------
+// Everything the plain-file-explorer screen needs, kept in one struct
+// so it can't tangle with the vault-side state below. See the
+// "Explorer" section further down for the screen itself.
+// Result hand-off for the background subfolder search (the worker writes,
+// the UI thread reads on a later frame). Held by shared_ptr so a job that
+// outlives a folder change or the app can't dangle.
+struct SearchShared {
+    std::mutex mutex;
+    uint64_t gen = 0;  // generation of the job that wrote `results`
+    bool done = false;
+    std::vector<cvfs::Entry> results;
+    bool truncated = false;
+    std::string error;
+};
+
+struct ExplorerState {
+    std::string cwd;            // absolute; empty until ExplorerInit runs on the first frame
+    std::string pending_start;  // folder requested on the command line (UiAppSetStart)
+    std::vector<cvfs::Entry> entries;      // what the grid shows (after filter / search)
+    std::vector<cvfs::Entry> all_entries;  // the folder's full listing
+    std::vector<char> multi;               // parallel to `entries`: multi-selection (Ctrl/Shift+click)
+    int anchor = -1;                       // Shift+click range start
+    std::string filter;                    // live name filter; Enter turns it into a subfolder search
+    bool filter_active = false;            // typing goes to the filter box
+    bool search_mode = false;              // `entries` are recursive search results
+    bool search_truncated = false;
+    bool searching = false;                // a background search is running
+    uint64_t search_gen = 0;               // bumped per search so stale results are ignored
+    std::shared_ptr<SearchShared> search_shared;
+    cvfs::ListOptions list_options;
+    bool needs_reload = true;
+    bool in_trash = false;      // cwd is (inside) ~/.local/share/Trash/files
+    std::string load_error;
+    int selected = -1;
+    float scroll = 0.0f;
+    float add_hover = 0.0f;     // DrawTileGrid wants a hover slot for its (unused here) "add" tile
+    std::vector<std::string> back_stack;
+
+    struct Clipboard {
+        std::vector<std::string> paths;
+        bool cut = false;
+    };
+    Clipboard clipboard;
+
+    struct Address {
+        bool active = false;
+        bool fresh = false;  // the pre-filled path is "selected": the first keystroke replaces it
+        std::string buffer;
+    };
+    Address address;
+
+    struct Menu {
+        bool open = false;
+        int index = -1;  // entry index, or -1 for the empty-space menu
+        float x = 0.0f, y = 0.0f;
+        anim::Timeline timeline;
+    };
+    Menu menu;
+
+    enum class PromptKind { None, Rename, NewFolder, NewFile };
+    struct Prompt {
+        PromptKind kind = PromptKind::None;
+        std::string target_path;  // Rename only
+        std::string buffer;
+    };
+    Prompt prompt;
+
+    enum class ConfirmKind { None, DeleteForever, EmptyTrash };
+    struct Confirm {
+        ConfirmKind kind = ConfirmKind::None;
+        std::string name;  // trashed_name for DeleteForever
+    };
+    Confirm confirm;
+
+    std::vector<cvfs::Place> places;
+    bool places_loaded = false;
+
+    // False on any frame an overlay (palette, settings, one of this
+    // side's own modals, ...) owns the keyboard - set by
+    // UiAppBeginFrame before drawing; the screen only reacts to
+    // Enter/Backspace/arrows while this is true.
+    bool keys_enabled = true;
+};
+
 struct AppState {
     cryptvault::UiInput input;
-    Screen screen = Screen::VaultList;
+    // Which half of the app is showing: Explorer is the unrestricted
+    // file explorer (the default); VaultList/VaultFolder are the
+    // restricted, locked-vault side. See SwitchSide().
+    Screen screen = Screen::Explorer;
+    Screen last_vault_screen = Screen::VaultList;  // where "VAULTS" returns to
+    ExplorerState explorer;
+    // Paths picked in the explorer via "ENCRYPT INTO VAULT": waits on the
+    // vault side for the user to open a vault + folder and confirm.
+    std::vector<std::string> pending_encrypt;
+    std::string clipboard_request;               // text for the system clipboard, consumed by main.cpp
+    bool has_clipboard_request = false;
+    bool pending_encrypt_delete_armed = false;  // first click on "delete originals" arms it, second confirms
 
     // Current frame's clock, copied from UiAppInput each
     // UiAppBeginFrame (see app_ui.h) - the single source of "now"
@@ -296,7 +433,7 @@ struct AppState {
     // small/400x300, true = large/900x600), kept here (not derived
     // from the live window size) so the button's own label reflects
     // what it's about to do even on the same frame it's clicked.
-    bool big_mode = false;
+    bool big_mode = true;   // main.cpp starts in the large window
     bool resize_requested = false;
 
     // VaultList screen: every vault the user has added, flat - no
@@ -421,6 +558,9 @@ struct AppState {
     struct Settings {
         bool animations_enabled = true;
         bool glass_effect_enabled = true;
+        // Leaving the vault side (FILES switch) locks every vault: drops
+        // unlocked sessions + master keys and deletes decrypted temp files.
+        bool lock_vaults_on_leave = true;
     };
     Settings settings;
     bool settings_panel_open = false;
@@ -641,6 +781,8 @@ struct AppState {
         int hover_slot = -1;          // recomputed every frame while active
     };
     TileDrag grid_drag;
+    TileDrag explorer_drag;  // never activates (reordering is off in the explorer) but DrawTileGrid wants one
+    float scale_up = 1.0f;
 
     // Brief accent-colored flash over the VaultFolder screen right
     // after a vault opens (see OpenVaultTab and DrawVaultFolderScreen)
@@ -993,6 +1135,28 @@ void CloseVaultTab(AppState& state, int tab_index) {
 // below (AddFolderToActiveVault, OpenCreateVaultWizard) use it and
 // are grouped with the other vault-session helpers above rather than
 // off on their own next to the toast-drawing code.
+// Text helpers shared by every text field. Buffers hold UTF-8, so Backspace
+// and truncation must work on whole characters, never single bytes.
+std::string AsciiLower(std::string text) {
+    for (char& c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return text;
+}
+
+// Byte length of the UTF-8 character at the start of `text`.
+size_t Utf8LeadLen(const std::string& text) {
+    if (text.empty()) return 0;
+    size_t n = 1;
+    while (n < text.size() && (static_cast<unsigned char>(text[n]) & 0xC0) == 0x80) ++n;
+    return n;
+}
+
+void PopLastCodepoint(std::string& text) {
+    if (text.empty()) return;
+    size_t i = text.size() - 1;
+    while (i > 0 && (static_cast<unsigned char>(text[i]) & 0xC0) == 0x80) --i;
+    text.erase(i);
+}
+
 void PushToast(AppState& state, const std::string& text);
 
 // Picks a name not already used by any item in `existing` (which must
@@ -1371,13 +1535,13 @@ std::string LoadSelectedBackgroundChoice() {
 std::vector<std::string> ScanBackgroundChoices() {
     std::vector<std::string> paths;
 
-    std::filesystem::path legacy = ExecutableDir() / "assets" / "background.png";
+    std::filesystem::path legacy = AssetsRoot() / "background.png";
     std::error_code ec;
     if (std::filesystem::exists(legacy, ec)) {
         paths.push_back(legacy.string());
     }
 
-    std::filesystem::path dir = ExecutableDir() / "assets" / "backgrounds";
+    std::filesystem::path dir = BackgroundsDir();
     std::filesystem::create_directories(dir, ec);
     if (std::filesystem::exists(dir, ec)) {
         for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
@@ -1444,7 +1608,7 @@ std::string TruncateToWidth(ContentRenderer& ui, const std::string& text, float 
     }
     std::string truncated = text;
     while (!truncated.empty() && ui.MeasureText(truncated + "...", 1.0f) > max_width) {
-        truncated.pop_back();
+        PopLastCodepoint(truncated);
     }
     return truncated.empty() ? "" : truncated + "...";
 }
@@ -2207,6 +2371,161 @@ constexpr int kProceduralFileIcon = -2;
 // pattern (declared before the template that calls it) is needed at
 // all in a single-TU, no-header-declarations file like this one.
 int TileIconFor(const Vault&, int tile_icon) { return tile_icon; }
+// Explorer entries: vault folders get the vault icon, other folders the
+// folder icon, files the procedural document glyph.
+// --- thumbnails (explorer image and video files) ---
+// Decoding happens on a background worker (images: stb_image; videos: one
+// frame grabbed by the optional ffmpeg), so scrolling a big folder never
+// stalls the window. The UI thread only uploads finished 64x64 results, a few
+// per frame (PumpThumbnails). Only on-screen tiles are requested, the queue is
+// bounded and dropped when you change folder, and the least recently shown
+// textures are released beyond a cap. Only the explorer side asks for these -
+// files inside vaults are never decoded for display.
+struct ThumbResult {
+    std::string key;
+    std::vector<unsigned char> rgba;
+    bool ok = false;
+};
+struct ThumbShared {
+    std::mutex mutex;
+    std::vector<ThumbResult> done;
+};
+struct ThumbnailCache {
+    static constexpr int kPending = -2;       // job queued/running
+    static constexpr size_t kMaxTextures = 300;
+    static constexpr size_t kMaxQueued = 48;
+    std::unordered_map<std::string, int> handles;        // key -> texture handle, kPending, or -1 (not previewable)
+    std::unordered_map<std::string, uint64_t> last_used;  // key -> frame number, for LRU eviction
+    std::shared_ptr<ThumbShared> shared = std::make_shared<ThumbShared>();
+    uint64_t frame = 0;
+    size_t live = 0;
+    bool enabled = true;
+};
+ThumbnailCache g_thumbnails;
+
+cryptvault::BackgroundWorker& ThumbWorker() {
+    static cryptvault::BackgroundWorker worker;
+    return worker;
+}
+
+bool HasThumbnailExtension(const std::string& name) {
+    size_t dot = name.rfind('.');
+    if (dot == std::string::npos) return false;
+    std::string ext = AsciiLower(name.substr(dot + 1));
+    return ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "bmp" || ext == "gif" || ext == "tga";
+}
+
+template <typename T>
+int TileThumbFor(const T&, ContentRenderer&, bool) { return -1; }
+
+int TileThumbFor(const cvfs::Entry& entry, ContentRenderer&, bool on_screen) {
+    ThumbnailCache& c = g_thumbnails;
+    if (!c.enabled || !on_screen || entry.is_dir || entry.size == 0) return -1;
+    const bool image = HasThumbnailExtension(entry.name) && entry.size <= 40u * 1024 * 1024;
+    const bool video = !image && cryptvault::IsVideoName(entry.name) && cryptvault::FfmpegAvailable();
+    if (!image && !video) return -1;
+    const std::string key = entry.path + "|" + std::to_string(entry.mtime) + "|" + std::to_string(entry.size);
+    auto it = c.handles.find(key);
+    if (it != c.handles.end()) {
+        c.last_used[key] = c.frame;
+        return it->second >= 0 ? it->second : -1;
+    }
+    if (ThumbWorker().Pending() >= ThumbnailCache::kMaxQueued) return -1;  // try again on a later frame
+    c.handles[key] = ThumbnailCache::kPending;
+    c.last_used[key] = c.frame;
+    std::shared_ptr<ThumbShared> shared = c.shared;
+    std::string path = entry.path;
+    ThumbWorker().Post([shared, key, path, video] {
+        ThumbResult result;
+        result.key = key;
+        result.ok = video ? cryptvault::GrabVideoFrameRgba(path, 64, result.rgba)
+                          : cryptvault::DecodeThumbnailRgba(path, 64, result.rgba);
+        std::lock_guard<std::mutex> lock(shared->mutex);
+        shared->done.push_back(std::move(result));
+    });
+    return -1;
+}
+
+// UI thread, once per frame: upload finished thumbnails (at most 4) and
+// release the least recently used textures beyond the cap.
+void PumpThumbnails(cryptvault::UiRenderer& ui) {
+    ThumbnailCache& c = g_thumbnails;
+    ++c.frame;
+    std::vector<ThumbResult> batch;
+    {
+        std::lock_guard<std::mutex> lock(c.shared->mutex);
+        size_t take = std::min<size_t>(4, c.shared->done.size());
+        for (size_t i = 0; i < take; ++i) batch.push_back(std::move(c.shared->done[i]));
+        c.shared->done.erase(c.shared->done.begin(), c.shared->done.begin() + static_cast<long>(take));
+    }
+    for (ThumbResult& r : batch) {
+        auto it = c.handles.find(r.key);
+        if (it == c.handles.end() || it->second != ThumbnailCache::kPending) continue;  // folder changed meanwhile
+        int handle = r.ok ? ui.CreateTexture(r.rgba.data(), 64, 64, "thumb") : -1;
+        if (handle >= 0) ++c.live;
+        it->second = handle;
+    }
+    while (c.live > ThumbnailCache::kMaxTextures) {
+        auto oldest = c.handles.end();
+        uint64_t oldest_used = UINT64_MAX;
+        for (auto it = c.handles.begin(); it != c.handles.end(); ++it) {
+            if (it->second < 0) continue;
+            uint64_t used = c.last_used[it->first];
+            if (used < oldest_used) { oldest_used = used; oldest = it; }
+        }
+        if (oldest == c.handles.end()) break;
+        ui.ReleaseTexture(oldest->second);
+        c.last_used.erase(oldest->first);
+        c.handles.erase(oldest);
+        --c.live;
+    }
+}
+
+// Folder changed: forget queued-but-unstarted work so the new folder's
+// visible tiles aren't stuck behind it.
+void CancelThumbnailRequests() {
+    ThumbWorker().CancelPending();
+    for (auto it = g_thumbnails.handles.begin(); it != g_thumbnails.handles.end();) {
+        if (it->second == ThumbnailCache::kPending) {
+            g_thumbnails.last_used.erase(it->first);
+            it = g_thumbnails.handles.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+// --- hover video preview (Dolphin-style) ---
+// Rest the pointer on a video file for a moment and a larger, muted, looping
+// preview plays in a popup beside the cursor. Decoding runs in a background
+// thread via ffmpeg (media_tools.h); the UI thread uploads the newest frame
+// into one reusable texture.
+constexpr int kPreviewFrameW = 320;
+constexpr int kPreviewFrameH = 180;
+struct HoverPreview {
+    cryptvault::VideoPreview player;
+    bool enabled = true;
+    std::string hover_path;     // video currently under the pointer
+    double hover_since = 0.0;
+    float hover_x = 0.0f, hover_y = 0.0f;
+    std::string playing_path;
+    int texture = -1;           // 320x180, created on the first frame
+    bool have_frame = false;    // a frame of the *current* video has been uploaded
+    bool warned_no_ffmpeg = false;
+};
+HoverPreview g_preview;
+
+void StopHoverPreview() {
+    g_preview.player.Stop();
+    g_preview.playing_path.clear();
+    g_preview.hover_path.clear();
+    g_preview.have_frame = false;
+}
+
+int TileIconFor(const cvfs::Entry& entry, int tile_icon) {
+    if (entry.is_vault && g_vault_icon_handle >= 0) return g_vault_icon_handle;
+    return entry.is_dir ? tile_icon : kProceduralFileIcon;
+}
 int TileIconFor(const vaultstore::TreeNode& item, int tile_icon) {
     return item.is_folder ? tile_icon : kProceduralFileIcon;
 }
@@ -2216,7 +2535,9 @@ TileGridResult DrawTileGrid(ContentRenderer& ui, const Icons& icons, float area_
                              float content_width, std::vector<T>& items, int tile_icon, int* selected,
                              int trailing_action_icon, const char* trailing_label_line2,
                              float& trailing_hover_amount, float& scroll_offset, float dt_seconds,
-                             const cryptvault::UiInput& input, AppState::TileDrag& drag) {
+                             const cryptvault::UiInput& input, AppState::TileDrag& drag,
+                             bool allow_reorder = true,
+                             const std::vector<char>* extra_selected = nullptr) {
     ui.DrawRect(0, area_y, content_width, area_h,
                 BackdropColor(palette::kContentBg, icons.background >= 0, 0.0f));
 
@@ -2300,7 +2621,7 @@ TileGridResult DrawTileGrid(ContentRenderer& ui, const Icons& icons, float area_
     // Runs before the draw loop below so a drop this frame can reorder
     // `items` before the loop lays out tiles from it.
     bool just_pressed = input.mouse_down && !drag.mouse_was_down;
-    if (drag.source_index < 0 && just_pressed) {
+    if (allow_reorder && drag.source_index < 0 && just_pressed) {
         int idx = SlotAt(input.mouse_x, input.mouse_y);
         if (idx >= 0) {
             drag.pressed = true;
@@ -2404,7 +2725,8 @@ TileGridResult DrawTileGrid(ContentRenderer& ui, const Icons& icons, float area_
         hover_amount = anim::MoveTowards(hover_amount, hovered ? 1.0f : 0.0f, dt_seconds,
                                           anim::duration::kMicro);
 
-        bool is_selected = (*selected == static_cast<int>(i));
+        bool is_selected = (*selected == static_cast<int>(i))
+                           || (extra_selected && i < extra_selected->size() && (*extra_selected)[i]);
         if (is_selected) {
             ui.DrawRect(cell_x + 2.0f, cell_y, usable_cell_w - 4.0f, kRowH - 4.0f, palette::kCellSelected);
         } else if (hover_amount > 0.001f) {
@@ -2423,6 +2745,14 @@ TileGridResult DrawTileGrid(ContentRenderer& ui, const Icons& icons, float area_
 
         int icon = is_trailing ? trailing_action_icon : TileIconFor(items[i], tile_icon);
         cryptvault::UiColor tint = LerpColor(palette::kIconTint, palette::kIconTintHover, hover_amount);
+        if (!is_trailing) {
+            const bool on_screen = cell_y + kRowH > area_y && cell_y < area_y + area_h;
+            int thumb = TileThumbFor(items[i], ui, on_screen);
+            if (thumb >= 0) {  // real picture: draw it untinted
+                icon = thumb;
+                tint = cryptvault::UiColor{1.0f, 1.0f, 1.0f, 1.0f};
+            }
+        }
         if (icon == kProceduralFileIcon) {
             // A small document glyph: a page (rounded rect) with a
             // folded top-right corner and a couple of lines standing
@@ -2553,6 +2883,90 @@ void DrawStatusBar(ContentRenderer& ui, float content_width, float content_heigh
     ui.DrawLabel(8.0f, y + (kStatusBarHeight - 7.0f) * 0.5f, text, palette::kTextMuted, 1.0f);
 }
 
+// --- "encrypt into vault" (explorer -> vault side hand-over) -----------------
+// The explorer's ENCRYPT INTO VAULT command stores paths in
+// AppState::pending_encrypt and switches here. A banner then offers to
+// encrypt them into whichever vault folder is open. Nothing is read or
+// written until the user clicks one of the banner's buttons.
+
+void ImportPendingIntoVault(AppState& state, vaultstore::Vault& vault, vaultstore::TreeNode& target,
+                            bool delete_originals) {
+    int succeeded = 0, failed = 0;
+    for (const std::string& path : state.pending_encrypt) {
+        auto [s, f] = ImportPathIntoVault(vault, target, std::filesystem::path(path));
+        succeeded += s;
+        failed += f;
+    }
+    std::string msg;
+    if (failed == 0) {
+        msg = std::to_string(succeeded) + (succeeded == 1 ? " FILE ENCRYPTED" : " FILES ENCRYPTED");
+        if (delete_originals) {
+            std::error_code ec;
+            for (const std::string& path : state.pending_encrypt) std::filesystem::remove_all(path, ec);
+            msg += " - ORIGINALS DELETED";
+        }
+    } else {
+        // Never delete originals after a partial failure.
+        msg = std::to_string(succeeded) + " ENCRYPTED, " + std::to_string(failed) + " FAILED - ORIGINALS KEPT";
+    }
+    PushToast(state, msg);
+    state.pending_encrypt.clear();
+}
+
+// `vault`/`folder` are null on the vault list (no vault open yet).
+void DrawEncryptBanner(ContentRenderer& ui, AppState& state, vaultstore::Vault* vault, vaultstore::TreeNode* folder) {
+    if (state.pending_encrypt.empty()) return;
+    constexpr float kH = 22.0f, kBtnH = 16.0f;
+    float y = state.content_height - kStatusBarHeight - kH - 2.0f;
+    ui.DrawRoundedRect(6.0f, y, state.content_width - 12.0f, kH, 4.0f, cryptvault::UiColor{0.10f, 0.22f, 0.22f, 0.97f});
+
+    // Laid out right to left: the safe, expected action sits at the right
+    // edge; the destructive option is the farthest away and needs a second
+    // click to confirm.
+    struct Button { const char* label; int action; };  // 0 cancel, 1 encrypt, 2 encrypt and delete originals
+    std::vector<Button> buttons;
+    if (vault && folder) buttons.push_back({"ENCRYPT HERE", 1});
+    buttons.push_back({"CANCEL", 0});
+    if (vault && folder) {
+        buttons.push_back({state.pending_encrypt_delete_armed ? "CLICK AGAIN TO DELETE ORIGINALS"
+                                                              : "ENCRYPT AND DELETE ORIGINALS", 2});
+    }
+
+    float x = state.content_width - 10.0f;
+    int clicked_action = -1;
+    for (const Button& b : buttons) {
+        float bw = ui.MeasureText(b.label, 1.0f) + 14.0f;
+        x -= bw;
+        bool hovered = HitTest(state.input, x, y + (kH - kBtnH) * 0.5f, bw, kBtnH);
+        cryptvault::UiColor bg = b.action == 2 ? (hovered ? palette::kDangerHover : palette::kDanger)
+                                 : (hovered ? palette::kAccent : palette::kTabActive);
+        ui.DrawRoundedRect(x, y + (kH - kBtnH) * 0.5f, bw, kBtnH, 3.0f, bg);
+        ui.DrawLabel(x + 7.0f, y + (kH - 7.0f) * 0.5f, b.label, palette::kTextPrimary, 1.0f);
+        if (hovered && state.input.clicked) clicked_action = b.action;
+        x -= 6.0f;
+    }
+
+    std::string text = std::to_string(state.pending_encrypt.size())
+                       + (state.pending_encrypt.size() == 1 ? " ITEM" : " ITEMS")
+                       + (vault ? " TO ENCRYPT INTO THIS FOLDER" : " TO ENCRYPT - OPEN A VAULT");
+    ui.DrawLabel(14.0f, y + (kH - 7.0f) * 0.5f, TruncateToWidth(ui, text, std::max(0.0f, x - 20.0f)),
+                 palette::kTextPrimary, 1.0f);
+
+    if (clicked_action >= 0) {
+        state.input.clicked = false;
+        if (clicked_action == 2 && !state.pending_encrypt_delete_armed) {
+            state.pending_encrypt_delete_armed = true;   // arm; nothing happens yet
+        } else {
+            bool delete_originals = (clicked_action == 2);
+            state.pending_encrypt_delete_armed = false;
+            if (clicked_action == 0) state.pending_encrypt.clear();
+            else if (vault && folder) ImportPendingIntoVault(state, *vault, *folder, delete_originals);
+        }
+    } else if (state.input.clicked) {
+        state.pending_encrypt_delete_armed = false;      // any other click disarms
+    }
+}
+
 void DrawVaultListScreen(ContentRenderer& ui, const Icons& icons, AppState& state) {
     // No tab bar here anymore - there's nothing to be tabs *of* now
     // that the DirTab layer is gone (see AppState::vaults' comment).
@@ -2572,6 +2986,7 @@ void DrawVaultListScreen(ContentRenderer& ui, const Icons& icons, AppState& stat
     if (!state.input.dropped_paths.empty()) {
         PushToast(state, "OPEN A VAULT FIRST TO DROP FILES INTO IT");
     }
+    DrawEncryptBanner(ui, state, nullptr, nullptr);
 
     if (grid_result.delete_requested >= 0) {
         // See DrawDeleteModal's vault-deletion branch: this removes
@@ -2642,6 +3057,7 @@ void DrawVaultFolderScreen(ContentRenderer& ui, const Icons& icons, AppState& st
     // any, the cursor was over at drop time), so this has to run
     // after DrawTileGrid rather than before.
     DropFilesIntoVault(state, *vault, current_folder, grid_result.hovered_index);
+    DrawEncryptBanner(ui, state, vault, &current_folder);
 
     if (grid_result.delete_requested >= 0) {
         AppState::PendingDelete pending;
@@ -3121,7 +3537,7 @@ void DrawSettingsPanel(ContentRenderer& ui, AppState& state, Icons& icons) {
                     if (platform::PickFile("Choose a background image or GIF", "Images and GIFs",
                                             {"png", "jpg", "jpeg", "gif"}, picked)) {
                         std::error_code ec;
-                        std::filesystem::path dest_dir = ExecutableDir() / "assets" / "backgrounds";
+                        std::filesystem::path dest_dir = BackgroundsDir();
                         std::filesystem::create_directories(dest_dir, ec);
                         std::filesystem::path dest = dest_dir / std::filesystem::path(picked).filename();
                         std::filesystem::copy_file(picked, dest, std::filesystem::copy_options::overwrite_existing,
@@ -3284,6 +3700,1169 @@ void DrawSettingsPanel(ContentRenderer& ui, AppState& state, Icons& icons) {
     }
 }
 
+// =========================================================================
+// Explorer - the UNRESTRICTED side of the app
+// =========================================================================
+// A plain Linux file explorer over the real filesystem (engine:
+// src/explorer/fs_ops.*, shared with the terminal commands). Nothing
+// here ever touches vault contents: a vault directory is just a folder
+// with a lock-style icon, and opening one hands over to the restricted
+// side (OpenVaultFromExplorer), which asks for the password as usual.
+//
+// The two sides are separated on purpose:
+//   - FILES | VAULTS switch in the status bar (DrawSideSwitch)
+//   - leaving the vault side locks every vault by default
+//     (Settings::lock_vaults_on_leave -> LockAllVaults): sessions and
+//     their master keys are dropped, decrypted temp files are deleted.
+//   - the explorer never lists, reads or writes inside a vault.
+
+std::string TrashFilesDir() { return cvfs::TrashDir() + "/files"; }
+
+// The Trash view merges the home trash with the trash of every mounted drive
+// (see fs_ops.h). Inside a trashed folder the path may be on another drive:
+// $topdir/.Trash-$uid/files/... or $topdir/.Trash/$uid/files/...
+bool IsInsideAnyTrash(const std::string& path) {
+    if (path == TrashFilesDir() || path.rfind(TrashFilesDir() + "/", 0) == 0) return true;
+#ifndef _WIN32
+    const std::string uid = std::to_string(static_cast<unsigned long>(::getuid()));
+    return path.find("/.Trash-" + uid + "/files") != std::string::npos
+           || path.find("/.Trash/" + uid + "/files") != std::string::npos;
+#else
+    return false;
+#endif
+}
+
+cryptvault::BackgroundWorker& SearchWorker() {
+    static cryptvault::BackgroundWorker worker;
+    return worker;
+}
+
+// Rebuilds the visible list from the full listing + the live name filter.
+void ExplorerApplyFilter(AppState& state) {
+    ExplorerState& ex = state.explorer;
+    ex.entries.clear();
+    const std::string needle = AsciiLower(ex.filter);
+    for (const cvfs::Entry& entry : ex.all_entries) {
+        if (needle.empty() || AsciiLower(entry.name).find(needle) != std::string::npos) ex.entries.push_back(entry);
+    }
+    ex.multi.assign(ex.entries.size(), 0);
+    ex.selected = -1;
+    ex.anchor = -1;
+}
+
+void ExplorerReload(AppState& state) {
+    ExplorerState& ex = state.explorer;
+    ex.load_error.clear();
+    ex.needs_reload = false;
+    std::string error;
+    if (!ex.search_mode) {
+        ex.searching = false;
+        ++ex.search_gen;  // any search still running is now stale
+    }
+    if (ex.search_mode) {
+        // Runs on a background thread: searching a big tree must not freeze
+        // the window. DrawExplorerScreen picks the result up when it's done.
+        if (!ex.search_shared) ex.search_shared = std::make_shared<SearchShared>();
+        const uint64_t gen = ++ex.search_gen;
+        ex.searching = true;
+        ex.entries.clear();
+        ex.multi.clear();
+        ex.selected = -1;
+        ex.anchor = -1;
+        ex.search_truncated = false;
+        std::shared_ptr<SearchShared> shared = ex.search_shared;
+        std::string root = ex.cwd, query = ex.filter;
+        bool hidden = ex.list_options.show_hidden;
+        SearchWorker().CancelPending();
+        SearchWorker().Post([shared, gen, root, query, hidden] {
+            std::vector<cvfs::Entry> results;
+            bool truncated = false;
+            std::string err;
+            cvfs::Search(root, query, hidden, 500, results, truncated, err);
+            std::lock_guard<std::mutex> lock(shared->mutex);
+            if (gen >= shared->gen) {
+                shared->gen = gen;
+                shared->results = std::move(results);
+                shared->truncated = truncated;
+                shared->error = err;
+                shared->done = true;
+            }
+        });
+        return;
+    }
+    if (ex.cwd == TrashFilesDir()) {
+        // Virtual root of the Trash: every drive's trashed items, shown under
+        // their original names (the entry's path is the real payload file).
+        std::vector<cvfs::TrashItem> items;
+        ex.all_entries.clear();
+        if (cvfs::TrashList(items, error)) {
+            for (const cvfs::TrashItem& item : items) {
+                cvfs::Entry entry;
+                if (!cvfs::StatEntry(item.payload_path, entry)) continue;
+                std::string original = std::filesystem::path(item.original_path).filename().string();
+                if (!original.empty()) entry.name = original;
+                ex.all_entries.push_back(std::move(entry));
+            }
+        } else {
+            ex.load_error = error;
+        }
+        ExplorerApplyFilter(state);
+        return;
+    }
+    cvfs::ListOptions options = ex.list_options;
+    if (ex.in_trash) options.show_hidden = true;
+    if (!cvfs::ListDir(ex.cwd, options, ex.all_entries, error)) {
+        ex.load_error = error;
+        ex.all_entries.clear();
+    }
+    ExplorerApplyFilter(state);
+}
+
+void ExplorerNavigate(AppState& state, const std::string& path_in, bool push_history = true) {
+    ExplorerState& ex = state.explorer;
+    std::string path = cvfs::ExpandPath(path_in);
+    std::error_code ec;
+    if (path == TrashFilesDir()) std::filesystem::create_directories(path, ec);  // no trash yet == empty trash
+    if (!std::filesystem::is_directory(path, ec)) {
+        PushToast(state, "NOT A FOLDER: " + path);
+        return;
+    }
+    if (push_history && !ex.cwd.empty() && ex.cwd != path) ex.back_stack.push_back(ex.cwd);
+    ex.cwd = path;
+    ex.in_trash = IsInsideAnyTrash(path);
+    ex.selected = -1;
+    ex.scroll = 0.0f;
+    ex.needs_reload = true;
+    ex.menu.open = false;
+    ex.address.active = false;
+    ex.filter.clear();
+    ex.filter_active = false;
+    ex.search_mode = false;
+    ex.searching = false;
+    ++ex.search_gen;
+    CancelThumbnailRequests();
+}
+
+void ExplorerGoBack(AppState& state) {
+    ExplorerState& ex = state.explorer;
+    while (!ex.back_stack.empty()) {
+        std::string target = ex.back_stack.back();
+        ex.back_stack.pop_back();
+        std::error_code ec;
+        if (std::filesystem::is_directory(target, ec)) {  // skip folders that vanished meanwhile
+            ExplorerNavigate(state, target, false);
+            return;
+        }
+    }
+}
+
+void ExplorerGoUp(AppState& state) {
+    if (state.explorer.cwd != "/") ExplorerNavigate(state, cvfs::ParentPath(state.explorer.cwd));
+}
+
+void ExplorerInit(AppState& state) {
+    ExplorerState& ex = state.explorer;
+    if (!ex.cwd.empty()) return;
+    std::string start = ex.pending_start.empty() ? cvfs::ExpandPath("~") : ex.pending_start;
+    std::error_code ec;
+    if (!std::filesystem::is_directory(start, ec)) start = cvfs::ExpandPath("~");
+    ex.cwd = start;
+    ex.in_trash = false;
+    ex.needs_reload = true;
+    ex.places = cvfs::Places();
+    ex.places_loaded = true;
+}
+
+// Locks every vault: drops all tabs and unlocked sessions (the
+// vaultstore::Vault destructor scrubs the master key) and deletes the
+// decrypted temp copies made by "open file" - best-effort, since the
+// viewer application may still have one open (on Linux that's fine:
+// unlinking an open file just removes the name).
+void LockAllVaults(AppState& state) {
+    bool had_open = !state.open_sessions.empty();
+    while (!state.vault_tabs.empty()) {
+        CloseVaultTab(state, 0);
+    }
+    state.open_sessions.clear();
+    std::error_code ec;
+    for (const std::string& path : state.temp_files_to_cleanup) {
+        std::filesystem::remove(path, ec);
+    }
+    state.temp_files_to_cleanup.clear();
+    state.unlock_prompt = AppState::UnlockPrompt{};
+    state.rename = AppState::RenameState{};
+    state.context_menu.open = false;
+    state.pending_delete = AppState::PendingDelete{};
+    state.selected_folder = -1;
+    if (had_open) PushToast(state, "VAULTS LOCKED");
+}
+
+void SwitchSide(AppState& state, bool to_vaults) {
+    state.explorer.menu.open = false;
+    state.explorer.address.active = false;
+    state.explorer.prompt = ExplorerState::Prompt{};
+    state.explorer.confirm = ExplorerState::Confirm{};
+    if (to_vaults) {
+        if (state.screen == Screen::Explorer) state.screen = state.last_vault_screen;
+        if (state.screen == Screen::Explorer
+            || (state.screen == Screen::VaultFolder && state.vault_tabs.empty())) {
+            state.screen = Screen::VaultList;
+        }
+        return;
+    }
+    state.pending_encrypt.clear();  // "encrypt into vault" only makes sense while on the vault side
+    if (state.screen != Screen::Explorer) {
+        state.last_vault_screen = state.screen;
+        if (state.settings.lock_vaults_on_leave) {
+            LockAllVaults(state);
+            state.last_vault_screen = Screen::VaultList;
+        }
+    }
+    state.screen = Screen::Explorer;
+    state.explorer.needs_reload = true;
+}
+
+// Double-clicking a vault folder in the explorer: make sure it's in
+// the vault list, switch to the restricted side and ask for the password.
+void OpenVaultFromExplorer(AppState& state, const cvfs::Entry& entry) {
+    int index = -1;
+    for (size_t i = 0; i < state.vaults.size(); ++i) {
+        if (state.vaults[i].path == entry.path) index = static_cast<int>(i);
+    }
+    if (index < 0) {
+        Vault vault;
+        vault.name = entry.name;
+        vault.path = entry.path;
+        state.vaults.push_back(std::move(vault));
+        index = static_cast<int>(state.vaults.size()) - 1;
+        SaveKnownVaults(state);
+        PushToast(state, "ADDED TO YOUR VAULT LIST");
+    }
+    SwitchSide(state, true);
+    state.screen = Screen::VaultList;
+    RequestOpenVault(state, index);
+}
+
+void ExplorerActivate(AppState& state, int index) {
+    ExplorerState& ex = state.explorer;
+    if (index < 0 || index >= static_cast<int>(ex.entries.size())) return;
+    const cvfs::Entry entry = ex.entries[index];  // copy: navigation replaces ex.entries
+    if (entry.is_vault && !ex.in_trash) {
+        OpenVaultFromExplorer(state, entry);
+    } else if (entry.is_dir) {
+        ExplorerNavigate(state, entry.path);
+    } else {
+        std::string error;
+        if (!platform::OpenFileWithDefaultApp(entry.path, &error)) {
+            PushToast(state, "COULDN'T OPEN: " + error);
+        }
+    }
+}
+
+// Indices acted on by a menu command: the whole multi-selection when the
+// right-clicked tile is part of it, otherwise just that tile.
+std::vector<int> ExplorerTargets(const AppState& state, int index) {
+    const ExplorerState& ex = state.explorer;
+    std::vector<int> out;
+    if (index >= 0 && index < static_cast<int>(ex.multi.size()) && ex.multi[index]) {
+        for (size_t i = 0; i < ex.multi.size(); ++i) {
+            if (ex.multi[i]) out.push_back(static_cast<int>(i));
+        }
+    } else if (index >= 0 && index < static_cast<int>(ex.entries.size())) {
+        out.push_back(index);
+    }
+    return out;
+}
+
+// What keyboard shortcuts act on: every multi-selected tile, else the single selected one.
+std::vector<int> ExplorerSelection(const AppState& state) {
+    const ExplorerState& ex = state.explorer;
+    std::vector<int> out;
+    for (size_t i = 0; i < ex.multi.size(); ++i) {
+        if (ex.multi[i]) out.push_back(static_cast<int>(i));
+    }
+    if (ex.selected >= 0 && ex.selected < static_cast<int>(ex.entries.size())
+        && std::find(out.begin(), out.end(), ex.selected) == out.end()) {
+        out.push_back(ex.selected);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// "COPY PATH": the selected items' absolute paths, one per line, to the system clipboard.
+void ExplorerCopyPaths(AppState& state, const std::vector<int>& indices) {
+    ExplorerState& ex = state.explorer;
+    std::string text;
+    for (int index : indices) {
+        if (index < 0 || index >= static_cast<int>(ex.entries.size())) continue;
+        if (!text.empty()) text += '\n';
+        text += ex.entries[index].path;
+    }
+    if (text.empty()) return;
+    state.clipboard_request = text;
+    state.has_clipboard_request = true;
+    PushToast(state, indices.size() == 1 ? "PATH COPIED" : "PATHS COPIED");
+}
+
+void ExplorerTrashEntries(AppState& state, const std::vector<int>& indices) {
+    ExplorerState& ex = state.explorer;
+    int ok = 0;
+    std::string error;
+    for (int index : indices) {
+        if (index < 0 || index >= static_cast<int>(ex.entries.size())) continue;
+        if (cvfs::TrashPut(ex.entries[index].path, error)) ++ok;
+        else { PushToast(state, "COULDN'T TRASH: " + error); break; }
+    }
+    if (ok > 0) PushToast(state, ok == 1 ? "MOVED TO TRASH" : "MOVED " + std::to_string(ok) + " ITEMS TO TRASH");
+    ex.needs_reload = true;
+}
+
+void ExplorerCopyToClipboard(AppState& state, const std::vector<int>& indices, bool cut) {
+    ExplorerState& ex = state.explorer;
+    ex.clipboard.paths.clear();
+    for (int index : indices) {
+        if (index >= 0 && index < static_cast<int>(ex.entries.size())) ex.clipboard.paths.push_back(ex.entries[index].path);
+    }
+    ex.clipboard.cut = cut;
+    if (!ex.clipboard.paths.empty()) {
+        // Also offer the files to other apps (Dolphin, GNOME Files, ...) through the
+        // system clipboard - needs wl-copy/xclip; without them it stays internal.
+        std::string hint;
+        bool shared = platform::CopyFilesToSystemClipboard(ex.clipboard.paths, cut, &hint);
+        static bool hint_shown = false;
+        if (!shared && !hint.empty() && !hint_shown) {
+            hint_shown = true;
+            PushToast(state, hint);
+        } else {
+            PushToast(state, cut ? "CUT - PASTE IT SOMEWHERE" : "COPIED - PASTE IT SOMEWHERE");
+        }
+    }
+}
+
+// "ENCRYPT INTO VAULT": remember what to encrypt and hand over to the
+// vault side, which finishes the job once a vault + folder are chosen
+// (the banner drawn by DrawEncryptBanner).
+void ExplorerStartEncrypt(AppState& state, const std::vector<int>& indices) {
+    ExplorerState& ex = state.explorer;
+    std::vector<std::string> paths;
+    for (int index : indices) {
+        if (index >= 0 && index < static_cast<int>(ex.entries.size()) && !ex.entries[index].is_vault) {
+            paths.push_back(ex.entries[index].path);
+        }
+    }
+    if (paths.empty()) {
+        PushToast(state, "NOTHING TO ENCRYPT");
+        return;
+    }
+    state.pending_encrypt = paths;
+    SwitchSide(state, true);  // keeps pending_encrypt (only leaving the vault side clears it)
+    PushToast(state, "OPEN A VAULT, THEN CHOOSE ENCRYPT");
+}
+
+void ExplorerTrashEntry(AppState& state, int index) {
+    ExplorerState& ex = state.explorer;
+    if (index < 0 || index >= static_cast<int>(ex.entries.size())) return;
+    std::string error;
+    if (cvfs::TrashPut(ex.entries[index].path, error)) {
+        PushToast(state, "MOVED TO TRASH");
+    } else {
+        PushToast(state, "COULDN'T TRASH: " + error);
+    }
+    ex.selected = -1;
+    ex.needs_reload = true;
+}
+
+void ExplorerPaste(AppState& state, const std::string& dest_dir) {
+    ExplorerState& ex = state.explorer;
+    ExplorerState::Clipboard& cb = ex.clipboard;
+    {   // Files copied in another app take priority (our own copies are on the system clipboard too).
+        std::vector<std::string> system_paths;
+        bool system_cut = false;
+        if (platform::ReadFilesFromSystemClipboard(&system_paths, &system_cut)) {
+            cb.paths = system_paths;
+            cb.cut = system_cut;
+        }
+    }
+    if (cb.paths.empty()) {
+        PushToast(state, "NOTHING TO PASTE");
+        return;
+    }
+    int ok = 0, failed = 0;
+    std::string error, last_error;
+    for (const std::string& src : cb.paths) {
+        std::string name = std::filesystem::path(src).filename().string();
+        if (cb.cut && std::filesystem::path(src).parent_path() == std::filesystem::path(dest_dir)) {
+            continue;  // cutting then pasting into the same folder is a no-op
+        }
+        std::string dst = dest_dir + "/" + cvfs::UniqueName(dest_dir, name);
+        bool done = cb.cut ? cvfs::Move(src, dst, error) : cvfs::Copy(src, dst, error);
+        if (done) ++ok; else { ++failed; last_error = error; }
+    }
+    if (cb.cut && failed == 0) cb.paths.clear();
+    if (failed > 0) PushToast(state, "PASTE FAILED: " + last_error);
+    else PushToast(state, "PASTED " + std::to_string(ok) + (ok == 1 ? " ITEM" : " ITEMS"));
+    ex.needs_reload = true;
+}
+
+bool ValidEntryName(const std::string& name) {
+    return !name.empty() && name != "." && name != ".." && name.find('/') == std::string::npos;
+}
+
+// --- explorer drawing --------------------------------------------------------
+
+void DrawExplorerToolbar(ContentRenderer& ui, const Icons& icons, AppState& state) {
+    ExplorerState& ex = state.explorer;
+    ui.DrawRect(0, 0, state.content_width, kToolbarHeight,
+                BackdropColor(palette::kToolbar, icons.background >= 0, 1.0f));
+
+    // While one of this side's modals (or the palette/settings) is up, the
+    // navigation widgets ignore clicks - same effect the screens get from
+    // the overlay masking in UiAppBeginFrame, which runs after the toolbar.
+    cryptvault::UiInput masked = state.input;
+    if (!ex.keys_enabled) {
+        masked.clicked = masked.double_clicked = masked.right_clicked = false;
+    }
+
+    constexpr float kNavIconSize = 24.0f;
+    constexpr float kNavIconY = (kToolbarHeight - kNavIconSize) * 0.5f;
+    float x = 5.0f;
+    if (IconButton(ui, x, kNavIconY, kNavIconSize, icons.arrow_back, masked, &state.scale_back,
+                   EffectiveDt(state))) {
+        ExplorerGoBack(state);
+    }
+    x += kNavIconSize + 4.0f;
+    if (IconButton(ui, x, kNavIconY, kNavIconSize, icons.arrow_up, masked, &state.scale_up,
+                   EffectiveDt(state))) {
+        ExplorerGoUp(state);
+    }
+    x += kNavIconSize + 4.0f;
+    if (IconButton(ui, x, kNavIconY, kNavIconSize, icons.home, masked, &state.scale_home,
+                   EffectiveDt(state))) {
+        ExplorerNavigate(state, "~");
+    }
+    x += kNavIconSize + 4.0f;
+
+    constexpr float kRightIconSize = 14.0f;
+    constexpr float kRightIconGap = 6.0f;
+    constexpr int kRightIconCount = 4;
+    float right_w = kRightIconCount * kRightIconSize + (kRightIconCount - 1) * kRightIconGap;
+    float right_x = state.content_width - 4.0f - right_w;
+    constexpr float kRightIconY = (kToolbarHeight - kRightIconSize) * 0.5f;
+    float rx = right_x;
+
+    if (IconButton(ui, rx, kRightIconY, kRightIconSize, icons.settings, state.input, &state.scale_settings,
+                   EffectiveDt(state))) {
+        state.settings_panel_open = !state.settings_panel_open;
+        if (state.settings_panel_open) {
+            state.command_palette.open = false;
+            state.input.clicked = false;
+        }
+    }
+    rx += kRightIconSize + kRightIconGap;
+    if (IconButton(ui, rx, kRightIconY, kRightIconSize, icons.search, state.input, &state.scale_search,
+                   EffectiveDt(state))) {
+        state.command_palette.open = !state.command_palette.open;
+        if (state.command_palette.open) {
+            state.settings_panel_open = false;
+            state.command_palette.query.clear();
+            state.command_palette.selected = 0;
+            state.input.clicked = false;
+        }
+    }
+    rx += kRightIconSize + kRightIconGap;
+    if (IconButton(ui, rx, kRightIconY, kRightIconSize, icons.refresh, masked, &state.scale_refresh,
+                   EffectiveDt(state))) {
+        ex.needs_reload = true;
+        ex.places = cvfs::Places();
+    }
+    rx += kRightIconSize + kRightIconGap;
+    if (IconButton(ui, rx, kRightIconY, kRightIconSize, icons.plus, masked, &state.scale_plus,
+                   EffectiveDt(state)) && !ex.in_trash) {
+        ex.prompt = ExplorerState::Prompt{};
+        ex.prompt.kind = ExplorerState::PromptKind::NewFolder;
+    }
+
+    // Address bar: shows the path; click to type one, Enter to go.
+    float addr_x = x + 3.0f;
+    float addr_y = (kToolbarHeight - kAddressBarHeight) * 0.5f;
+    float addr_w = right_x - 6.0f - addr_x;
+    if (addr_w <= 0.0f) return;
+    bool addr_hover = HitTest(masked, addr_x, addr_y, addr_w, kAddressBarHeight);
+    if (masked.clicked) {
+        if (addr_hover && !ex.address.active) {
+            ex.address.active = true;
+            ex.address.fresh = true;
+            ex.address.buffer = ex.cwd;
+        } else if (!addr_hover && ex.address.active) {
+            ex.address.active = false;
+        }
+    }
+    ui.DrawRoundedRect(addr_x, addr_y, addr_w, kAddressBarHeight, 4.0f,
+                       ex.address.active ? cryptvault::UiColor{0.11f, 0.13f, 0.12f, 1.0f} : palette::kAddressBar);
+
+    if (ex.address.active && ex.keys_enabled) {
+        if (ex.address.fresh && (!state.input.text_input.empty() || state.input.key_backspace)) {
+            ex.address.buffer.clear();  // typing over the selected path replaces it
+            ex.address.fresh = false;
+        }
+        ex.address.buffer += state.input.text_input;
+        if (state.input.key_backspace && !ex.address.buffer.empty()) PopLastCodepoint(ex.address.buffer);
+        state.input.key_backspace = false;  // consumed: don't also "go up" in the screen below
+        if (state.input.key_enter) {
+            state.input.key_enter = false;
+            std::string target = cvfs::ExpandPath(ex.address.buffer);
+            std::error_code ec;
+            ex.address.active = false;
+            if (std::filesystem::is_directory(target, ec)) {
+                if (cvfs::IsVaultDir(target)) {
+                    PushToast(state, "THAT'S A VAULT - USE THE VAULTS SIDE");
+                } else {
+                    ExplorerNavigate(state, target);
+                }
+            } else if (std::filesystem::exists(target, ec)) {
+                std::string error;
+                if (!platform::OpenFileWithDefaultApp(target, &error)) PushToast(state, "COULDN'T OPEN: " + error);
+            } else {
+                PushToast(state, "NO SUCH PATH");
+            }
+        }
+    }
+
+    std::string text;
+    float text_x;
+    if (ex.address.active) {
+        text = ex.address.buffer;
+        // Keep the tail (what's being typed) visible when it's longer than the box.
+        while (text.size() > 1 && ui.MeasureText(text, 1.0f) > addr_w - 12.0f) text.erase(0, Utf8LeadLen(text));
+        text_x = addr_x + 5.0f;
+    } else {
+        std::vector<std::string> segments = cvfs::PathSegments(ex.cwd);
+        // ["/", "home", "me"] -> ["/home", "me"]: the breadcrumb joins with " / ",
+        // so a separate "/" root segment would print as "/ / HOME / ME".
+        if (segments.size() > 1 && segments[0] == "/") {
+            segments.erase(segments.begin());
+            segments[0] = "/" + segments[0];
+        }
+        text = BuildAddressBreadcrumb(ui, segments, std::max(0.0f, addr_w - 8.0f));
+        text_x = addr_x + (addr_w - ui.MeasureText(text, 1.0f)) * 0.5f;
+    }
+    if (ex.address.active && ex.address.fresh) {
+        ui.DrawRect(text_x - 1.0f, addr_y + 3.0f, ui.MeasureText(text, 1.0f) + 2.0f, kAddressBarHeight - 6.0f,
+                    cryptvault::UiColor{0.30f, 0.55f, 0.60f, 0.55f});
+    }
+    ui.DrawLabel(text_x, addr_y + (kAddressBarHeight - 7.0f) * 0.5f, text, palette::kTextPrimary, 1.0f);
+    if (ex.address.active && !ex.address.fresh && std::fmod(state.now_seconds, 1.0) < 0.5) {
+        float cx = text_x + ui.MeasureText(text, 1.0f) + 1.0f;
+        ui.DrawRect(cx, addr_y + 4.0f, 1.0f, kAddressBarHeight - 8.0f, palette::kTextPrimary);
+    }
+}
+
+void DrawExplorerSidebar(ContentRenderer& ui, const Icons& icons, AppState& state, float width) {
+    ExplorerState& ex = state.explorer;
+    float area_y = kToolbarHeight;
+    float area_h = state.content_height - area_y - kStatusBarHeight;
+    ui.DrawRect(0, area_y, width, area_h, BackdropColor(palette::kToolbar, icons.background >= 0, 0.7f));
+    ui.PushClipRect(0, area_y, width, area_h);
+
+    constexpr float kRowH = 17.0f;
+    float y = area_y + 6.0f;
+    for (const cvfs::Place& place : ex.places) {
+        bool selected = (place.path == ex.cwd);
+        bool hovered = ex.keys_enabled && HitTest(state.input, 0, y, width, kRowH);
+        if (selected) ui.DrawRect(0, y, width, kRowH, palette::kCellSelected);
+        else if (hovered) ui.DrawRect(0, y, width, kRowH, palette::kCellHover);
+        std::string label = TruncateToWidth(ui, place.name, width - 16.0f);
+        ui.DrawLabel(10.0f, y + (kRowH - 7.0f) * 0.5f, label,
+                     selected ? palette::kTextPrimary : palette::kTextMuted, 1.0f);
+        if (hovered && state.input.clicked) {
+            state.input.clicked = false;
+            ExplorerNavigate(state, place.path);
+        }
+        y += kRowH;
+    }
+
+    // Gateway to the restricted side.
+    y += 8.0f;
+    ui.DrawRect(8.0f, y - 4.0f, width - 16.0f, 1.0f, cryptvault::UiColor{1.0f, 1.0f, 1.0f, 0.10f});
+    bool hovered = ex.keys_enabled && HitTest(state.input, 0, y, width, kRowH);
+    if (hovered) ui.DrawRect(0, y, width, kRowH, palette::kCellHover);
+    ui.DrawImage(8.0f, y + 2.0f, 12.0f, 12.0f, icons.vault, palette::kAccent);
+    ui.DrawLabel(24.0f, y + (kRowH - 7.0f) * 0.5f, "VAULTS", palette::kAccent, 1.0f);
+    if (hovered && state.input.clicked) {
+        state.input.clicked = false;
+        SwitchSide(state, true);
+    }
+    ui.PopClipRect();
+}
+
+// FILES | VAULTS switch in the status bar's right corner, drawn on
+// both sides - the one control that moves between the unrestricted
+// and the restricted half of the app.
+void DrawSideSwitch(ContentRenderer& ui, AppState& state) {
+    constexpr float kW = 46.0f, kH = 14.0f, kGap = 2.0f;
+    float y = state.content_height - kStatusBarHeight + (kStatusBarHeight - kH) * 0.5f;
+    float vaults_x = state.content_width - kW - 4.0f;
+    float files_x = vaults_x - kW - kGap;
+    bool on_files = (state.screen == Screen::Explorer);
+
+    struct Pill { float x; const char* label; bool active; bool to_vaults; };
+    const Pill pills[] = {{files_x, "FILES", on_files, false}, {vaults_x, "VAULTS", !on_files, true}};
+    for (const Pill& pill : pills) {
+        bool hovered = HitTest(state.input, pill.x, y, kW, kH);
+        cryptvault::UiColor bg = pill.active ? cryptvault::UiColor{palette::kAccent.r, palette::kAccent.g, palette::kAccent.b, 0.90f}
+                                             : (hovered ? cryptvault::UiColor{1.0f, 1.0f, 1.0f, 0.16f}
+                                                        : cryptvault::UiColor{1.0f, 1.0f, 1.0f, 0.08f});
+        ui.DrawRoundedRect(pill.x, y, kW, kH, 3.0f, bg);
+        cryptvault::UiColor fg = pill.active ? cryptvault::UiColor{0.05f, 0.08f, 0.09f, 1.0f} : palette::kTextPrimary;
+        ui.DrawLabel(pill.x + (kW - ui.MeasureText(pill.label, 1.0f)) * 0.5f, y + (kH - 7.0f) * 0.5f, pill.label, fg, 1.0f);
+        if (hovered && !pill.active && state.input.clicked) {
+            state.input.clicked = false;
+            SwitchSide(state, pill.to_vaults);
+            return;  // state.screen just changed under us
+        }
+    }
+}
+
+std::vector<std::string> ExplorerMenuItems(const AppState& state) {
+    const ExplorerState& ex = state.explorer;
+    std::vector<std::string> items;
+    bool at_trash_root = (ex.cwd == TrashFilesDir());
+    bool on_entry = ex.menu.index >= 0 && ex.menu.index < static_cast<int>(ex.entries.size());
+    if (at_trash_root) {
+        if (on_entry) {
+            items = {"RESTORE", "DELETE FOREVER"};
+        } else {
+            items = {"EMPTY TRASH", "REFRESH"};
+        }
+        return items;
+    }
+    if (ex.in_trash) {
+        if (on_entry) items.push_back("OPEN");
+        items.push_back("REFRESH");
+        return items;
+    }
+    if (on_entry) {
+        const cvfs::Entry& e = ex.entries[ex.menu.index];
+        items.push_back(e.is_vault ? "OPEN VAULT" : "OPEN");
+        if (ex.search_mode) items.push_back("SHOW IN FOLDER");
+        if (!e.is_vault) items.push_back("ENCRYPT INTO VAULT");
+        items.push_back("RENAME");
+        items.push_back("COPY");
+        items.push_back("CUT");
+        items.push_back("COPY PATH");
+        if (e.is_dir && !e.is_vault) items.push_back("PASTE INTO");
+        items.push_back("MOVE TO TRASH");
+    } else {
+        items.push_back("NEW FOLDER");
+        items.push_back("NEW FILE");
+        items.push_back("PASTE");
+        items.push_back(ex.list_options.show_hidden ? "HIDE HIDDEN FILES" : "SHOW HIDDEN FILES");
+        items.push_back("REFRESH");
+    }
+    return items;
+}
+
+void ExplorerRunMenuAction(AppState& state, const std::string& label, int index) {
+    ExplorerState& ex = state.explorer;
+    bool valid = index >= 0 && index < static_cast<int>(ex.entries.size());
+    std::string error;
+    if (label == "OPEN" || label == "OPEN VAULT") {
+        ExplorerActivate(state, index);
+    } else if (label == "RENAME" && valid) {
+        ex.prompt = ExplorerState::Prompt{};
+        ex.prompt.kind = ExplorerState::PromptKind::Rename;
+        ex.prompt.target_path = ex.entries[index].path;
+        ex.prompt.buffer = ex.entries[index].name;
+    } else if ((label == "COPY" || label == "CUT") && valid) {
+        ExplorerCopyToClipboard(state, ExplorerTargets(state, index), label == "CUT");
+    } else if (label == "COPY PATH" && valid) {
+        ExplorerCopyPaths(state, ExplorerTargets(state, index));
+    } else if (label == "ENCRYPT INTO VAULT" && valid) {
+        ExplorerStartEncrypt(state, ExplorerTargets(state, index));
+    } else if (label == "SHOW IN FOLDER" && valid) {
+        std::string folder = cvfs::ParentPath(ex.entries[index].path);
+        ExplorerNavigate(state, folder);
+    } else if (label == "PASTE") {
+        ExplorerPaste(state, ex.cwd);
+    } else if (label == "PASTE INTO" && valid) {
+        ExplorerPaste(state, ex.entries[index].path);
+    } else if (label == "MOVE TO TRASH") {
+        ExplorerTrashEntries(state, ExplorerTargets(state, index));
+    } else if (label == "NEW FOLDER") {
+        ex.prompt = ExplorerState::Prompt{};
+        ex.prompt.kind = ExplorerState::PromptKind::NewFolder;
+    } else if (label == "NEW FILE") {
+        ex.prompt = ExplorerState::Prompt{};
+        ex.prompt.kind = ExplorerState::PromptKind::NewFile;
+    } else if (label == "SHOW HIDDEN FILES" || label == "HIDE HIDDEN FILES") {
+        ex.list_options.show_hidden = !ex.list_options.show_hidden;
+        ex.needs_reload = true;
+    } else if (label == "REFRESH") {
+        ex.needs_reload = true;
+    } else if (label == "RESTORE" && valid) {
+        if (cvfs::TrashRestore(ex.entries[index].path, error)) PushToast(state, "RESTORED");
+        else PushToast(state, "COULDN'T RESTORE: " + error);
+        ex.needs_reload = true;
+    } else if (label == "DELETE FOREVER" && valid) {
+        ex.confirm.kind = ExplorerState::ConfirmKind::DeleteForever;
+        ex.confirm.name = ex.entries[index].path;   // the payload path is the trash handle
+    } else if (label == "EMPTY TRASH") {
+        ex.confirm.kind = ExplorerState::ConfirmKind::EmptyTrash;
+        ex.confirm.name.clear();
+    }
+}
+
+void DrawExplorerMenu(ContentRenderer& ui, AppState& state) {
+    ExplorerState& ex = state.explorer;
+    if (!ex.menu.open) return;
+    if (!ex.menu.timeline.started()) {
+        ex.menu.timeline.duration_seconds = state.settings.animations_enabled ? anim::duration::kMicro : 0.001f;
+        ex.menu.timeline.Start(state.now_seconds);
+    }
+    float eased = anim::Ease(anim::Easing::kEaseOutCubic, ex.menu.timeline.Progress(state.now_seconds));
+
+    std::vector<std::string> items = ExplorerMenuItems(state);
+    if (items.empty()) { ex.menu.open = false; return; }
+    constexpr float kItemH = 16.0f;
+    float menu_w = 90.0f;
+    for (const std::string& s : items) menu_w = std::max(menu_w, ui.MeasureText(s, 1.0f) + 18.0f);
+    float menu_h = items.size() * kItemH + 6.0f;
+    float menu_x = std::max(2.0f, std::min(ex.menu.x, state.content_width - menu_w - 2.0f));
+    float menu_y = std::max(2.0f, std::min(ex.menu.y, state.content_height - menu_h - 2.0f));
+    float scale = anim::Lerp(0.95f, 1.0f, eased);
+    float w = menu_w * scale, h = menu_h * scale;
+
+    float bg_alpha = state.settings.glass_effect_enabled ? 0.95f : 1.0f;
+    ui.DrawRoundedRect(menu_x, menu_y, w, h, 4.0f, cryptvault::UiColor{0.15f, 0.17f, 0.16f, bg_alpha * eased});
+    if (state.input.clicked && !HitTest(state.input, menu_x, menu_y, w, h)) {
+        ex.menu.open = false;
+        return;
+    }
+    if (eased < 0.4f) return;
+
+    int target_index = ex.menu.index;
+    float row_y = menu_y + 3.0f;
+    for (const std::string& label : items) {
+        bool hovered = HitTest(state.input, menu_x + 2.0f, row_y, w - 4.0f, kItemH);
+        if (hovered) ui.DrawRect(menu_x + 2.0f, row_y, w - 4.0f, kItemH, cryptvault::UiColor{1.0f, 1.0f, 1.0f, 0.08f});
+        bool danger = (label == "DELETE FOREVER" || label == "EMPTY TRASH");
+        ui.DrawLabel(menu_x + 8.0f, row_y + (kItemH - 7.0f) * 0.5f, label,
+                     danger ? palette::kDangerHover : palette::kTextPrimary, 1.0f);
+        if (hovered && state.input.clicked) {
+            ex.menu.open = false;
+            ExplorerRunMenuAction(state, label, target_index);
+            return;
+        }
+        row_y += kItemH;
+    }
+}
+
+void DrawExplorerPrompt(ContentRenderer& ui, AppState& state) {
+    ExplorerState& ex = state.explorer;
+    if (ex.prompt.kind == ExplorerState::PromptKind::None) return;
+
+    ex.prompt.buffer += state.input.text_input;
+    if (state.input.key_backspace && !ex.prompt.buffer.empty()) PopLastCodepoint(ex.prompt.buffer);
+
+    ui.DrawRect(0, 0, state.content_width, state.content_height, cryptvault::UiColor{0.0f, 0.0f, 0.0f, 0.5f});
+    constexpr float kPanelW = 190.0f, kPanelH = 70.0f;
+    float px = (state.content_width - kPanelW) * 0.5f;
+    float py = (state.content_height - kPanelH) * 0.5f;
+    float bg_alpha = state.settings.glass_effect_enabled ? 0.95f : 1.0f;
+    ui.DrawRoundedRect(px, py, kPanelW, kPanelH, 6.0f, cryptvault::UiColor{0.15f, 0.17f, 0.16f, bg_alpha});
+
+    const char* title = ex.prompt.kind == ExplorerState::PromptKind::Rename ? "RENAME"
+                        : ex.prompt.kind == ExplorerState::PromptKind::NewFolder ? "NEW FOLDER" : "NEW FILE";
+    ui.DrawLabel(px + 12.0f, py + 10.0f, title, palette::kTextPrimary, 1.0f);
+
+    constexpr float kFieldH = 16.0f;
+    float fx = px + 12.0f, fy = py + 28.0f, fw = kPanelW - 24.0f;
+    ui.DrawRoundedRect(fx, fy, fw, kFieldH, 3.0f, palette::kAddressBar);
+    std::string display = ex.prompt.buffer;
+    while (display.size() > 1 && ui.MeasureText(display, 1.0f) > fw - 10.0f) display.erase(0, Utf8LeadLen(display));
+    ui.DrawLabel(fx + 5.0f, fy + (kFieldH - 7.0f) * 0.5f, display, palette::kTextPrimary, 1.0f);
+    if (std::fmod(state.now_seconds, 1.0) < 0.5) {
+        ui.DrawRect(fx + 5.0f + ui.MeasureText(display, 1.0f) + 1.0f, fy + 3.0f, 1.0f, kFieldH - 6.0f, palette::kTextPrimary);
+    }
+
+    constexpr float kBtnW = 60.0f, kBtnH = 16.0f;
+    float by = py + kPanelH - kBtnH - 8.0f;
+    float ok_x = px + kPanelW - kBtnW - 10.0f;
+    float cancel_x = ok_x - kBtnW - 6.0f;
+    bool cancel_hover = HitTest(state.input, cancel_x, by, kBtnW, kBtnH);
+    bool ok_hover = HitTest(state.input, ok_x, by, kBtnW, kBtnH);
+    ui.DrawRoundedRect(cancel_x, by, kBtnW, kBtnH, 3.0f, cancel_hover ? palette::kTabActive : palette::kTabInactive);
+    ui.DrawLabel(cancel_x + (kBtnW - ui.MeasureText("CANCEL", 1.0f)) * 0.5f, by + (kBtnH - 7.0f) * 0.5f, "CANCEL", palette::kTextPrimary, 1.0f);
+    ui.DrawRoundedRect(ok_x, by, kBtnW, kBtnH, 3.0f, ok_hover ? palette::kAccent : palette::kTabActive);
+    ui.DrawLabel(ok_x + (kBtnW - ui.MeasureText("OK", 1.0f)) * 0.5f, by + (kBtnH - 7.0f) * 0.5f, "OK", palette::kTextPrimary, 1.0f);
+
+    bool commit = (ok_hover && state.input.clicked) || state.input.key_enter;
+    bool cancel = (cancel_hover && state.input.clicked)
+                  || (state.input.clicked && !HitTest(state.input, px, py, kPanelW, kPanelH));
+    if (commit) {
+        ExplorerState::Prompt prompt = ex.prompt;
+        ex.prompt = ExplorerState::Prompt{};
+        std::string error;
+        if (!ValidEntryName(prompt.buffer)) {
+            PushToast(state, "INVALID NAME");
+        } else if (prompt.kind == ExplorerState::PromptKind::Rename) {
+            if (!cvfs::Rename(prompt.target_path, prompt.buffer, error)) PushToast(state, "COULDN'T RENAME: " + error);
+        } else if (prompt.kind == ExplorerState::PromptKind::NewFolder) {
+            if (!cvfs::MakeDir(ex.cwd + "/" + prompt.buffer, error)) PushToast(state, "COULDN'T CREATE: " + error);
+        } else {
+            if (!cvfs::MakeFile(ex.cwd + "/" + prompt.buffer, error)) PushToast(state, "COULDN'T CREATE: " + error);
+        }
+        ex.needs_reload = true;
+    } else if (cancel) {
+        ex.prompt = ExplorerState::Prompt{};
+    }
+}
+
+void DrawExplorerConfirm(ContentRenderer& ui, AppState& state) {
+    ExplorerState& ex = state.explorer;
+    if (ex.confirm.kind == ExplorerState::ConfirmKind::None) return;
+
+    ui.DrawRect(0, 0, state.content_width, state.content_height, cryptvault::UiColor{0.0f, 0.0f, 0.0f, 0.55f});
+    constexpr float kPanelW = 200.0f, kPanelH = 78.0f;
+    float px = (state.content_width - kPanelW) * 0.5f;
+    float py = (state.content_height - kPanelH) * 0.5f;
+    float bg_alpha = state.settings.glass_effect_enabled ? 0.95f : 1.0f;
+    ui.DrawRoundedRect(px, py, kPanelW, kPanelH, 6.0f, cryptvault::UiColor{0.15f, 0.17f, 0.16f, bg_alpha});
+
+    bool empty = ex.confirm.kind == ExplorerState::ConfirmKind::EmptyTrash;
+    ui.DrawLabel(px + 12.0f, py + 10.0f, empty ? "EMPTY THE TRASH?" : "DELETE FOREVER?", palette::kTextPrimary, 1.0f);
+    std::string what = empty ? "EVERYTHING IN THE TRASH" : TruncateToWidth(ui, std::filesystem::path(ex.confirm.name).filename().string(), kPanelW - 24.0f);
+    ui.DrawLabel(px + 12.0f, py + 24.0f, what, palette::kTextMuted, 1.0f);
+    ui.DrawLabel(px + 12.0f, py + 35.0f, "THIS CAN'T BE UNDONE.", palette::kTextMuted, 1.0f);
+
+    constexpr float kBtnW = 64.0f, kBtnH = 16.0f;
+    float by = py + kPanelH - kBtnH - 8.0f;
+    float ok_x = px + kPanelW - kBtnW - 10.0f;
+    float cancel_x = ok_x - kBtnW - 6.0f;
+    bool cancel_hover = HitTest(state.input, cancel_x, by, kBtnW, kBtnH);
+    bool ok_hover = HitTest(state.input, ok_x, by, kBtnW, kBtnH);
+    ui.DrawRoundedRect(cancel_x, by, kBtnW, kBtnH, 3.0f, cancel_hover ? palette::kTabActive : palette::kTabInactive);
+    ui.DrawLabel(cancel_x + (kBtnW - ui.MeasureText("CANCEL", 1.0f)) * 0.5f, by + (kBtnH - 7.0f) * 0.5f, "CANCEL", palette::kTextPrimary, 1.0f);
+    ui.DrawRoundedRect(ok_x, by, kBtnW, kBtnH, 3.0f, ok_hover ? palette::kDangerHover : palette::kDanger);
+    ui.DrawLabel(ok_x + (kBtnW - ui.MeasureText("DELETE", 1.0f)) * 0.5f, by + (kBtnH - 7.0f) * 0.5f, "DELETE", palette::kTextPrimary, 1.0f);
+
+    // Deliberately no Enter-to-confirm: an irreversible action needs a click.
+    if (ok_hover && state.input.clicked) {
+        std::string error;
+        bool ok = empty ? cvfs::TrashEmpty(error) : cvfs::TrashDelete(ex.confirm.name, error);
+        PushToast(state, ok ? (empty ? "TRASH EMPTIED" : "DELETED") : "COULDN'T DELETE: " + error);
+        ex.confirm = ExplorerState::Confirm{};
+        ex.selected = -1;
+        ex.needs_reload = true;
+    } else if ((cancel_hover && state.input.clicked)
+               || (state.input.clicked && !HitTest(state.input, px, py, kPanelW, kPanelH))) {
+        ex.confirm = ExplorerState::Confirm{};
+    }
+}
+
+// Find bar above the status bar: type to filter this folder live, Enter to
+// search all subfolders, X (or emptying it) to clear.
+void DrawExplorerFilterBar(ContentRenderer& ui, AppState& state) {
+    ExplorerState& ex = state.explorer;
+    if (!ex.filter_active && ex.filter.empty() && !ex.search_mode) return;
+    constexpr float kBarH = 18.0f;
+    float y = state.content_height - kStatusBarHeight - kBarH - 2.0f;
+    float w = state.content_width - 12.0f;
+    ui.DrawRoundedRect(6.0f, y, w, kBarH, 4.0f, cryptvault::UiColor{0.11f, 0.13f, 0.12f, 0.96f});
+    ui.DrawLabel(12.0f, y + (kBarH - 7.0f) * 0.5f, ex.search_mode ? "SEARCH:" : "FIND:", palette::kTextMuted, 1.0f);
+    float tx = 12.0f + ui.MeasureText(ex.search_mode ? "SEARCH:" : "FIND:", 1.0f) + 8.0f;
+
+    if (ex.filter_active && ex.keys_enabled) {
+        bool changed = false;
+        if (!state.input.text_input.empty()) { ex.filter += state.input.text_input; changed = true; }
+        if (state.input.key_backspace) { PopLastCodepoint(ex.filter); changed = true; }
+        if (changed) {
+            if (ex.search_mode) { ex.search_mode = false; ex.needs_reload = true; }
+            else ExplorerApplyFilter(state);
+        }
+        if (state.input.key_enter) {
+            state.input.key_enter = false;
+            ex.filter_active = false;
+            if (!ex.filter.empty()) { ex.search_mode = true; ex.needs_reload = true; }
+        }
+    }
+    std::string shown = ex.filter;
+    while (shown.size() > 1 && tx + ui.MeasureText(shown, 1.0f) > state.content_width - 150.0f) shown.erase(0, Utf8LeadLen(shown));
+    ui.DrawLabel(tx, y + (kBarH - 7.0f) * 0.5f, shown, palette::kTextPrimary, 1.0f);
+    if (ex.filter_active && std::fmod(state.now_seconds, 1.0) < 0.5) {
+        ui.DrawRect(tx + ui.MeasureText(shown, 1.0f) + 1.0f, y + 4.0f, 1.0f, kBarH - 8.0f, palette::kTextPrimary);
+    }
+    if (ex.filter_active) {
+        const char* hint = "ENTER: SEARCH SUBFOLDERS";
+        ui.DrawLabel(state.content_width - 28.0f - ui.MeasureText(hint, 1.0f), y + (kBarH - 7.0f) * 0.5f, hint,
+                     palette::kTextMuted, 1.0f);
+    }
+    // clear button
+    float bx = state.content_width - 6.0f - 18.0f;
+    bool hovered = ex.keys_enabled && HitTest(state.input, bx, y, 18.0f, kBarH);
+    ui.DrawLabel(bx + 6.0f, y + (kBarH - 7.0f) * 0.5f, "X", hovered ? palette::kTextPrimary : palette::kTextMuted, 1.0f);
+    if (hovered && state.input.clicked) {
+        state.input.clicked = false;
+        ex.filter.clear();
+        ex.filter_active = false;
+        ex.search_mode = false;
+        ex.needs_reload = true;
+    }
+}
+
+// Tracks what the pointer rests on and runs / draws the video popup.
+void UpdateAndDrawHoverPreview(ContentRenderer& ui, AppState& state, const TileGridResult& result) {
+    ExplorerState& ex = state.explorer;
+    HoverPreview& hp = g_preview;
+    const int index = result.hovered_index;
+    const bool over_video = hp.enabled && ex.keys_enabled && !ex.in_trash && index >= 0
+                            && index < static_cast<int>(ex.entries.size()) && !ex.entries[index].is_dir
+                            && cryptvault::IsVideoName(ex.entries[index].name);
+    if (!over_video) {
+        if (!hp.hover_path.empty() || hp.player.Active()) StopHoverPreview();
+        return;
+    }
+    const cvfs::Entry& entry = ex.entries[index];
+    const float mx = state.input.mouse_x, my = state.input.mouse_y;
+    const bool moved = std::fabs(mx - hp.hover_x) > 10.0f || std::fabs(my - hp.hover_y) > 10.0f;
+    if (entry.path != hp.hover_path || moved) {
+        if (hp.player.Active()) { hp.player.Stop(); hp.playing_path.clear(); hp.have_frame = false; }
+        hp.hover_path = entry.path;
+        hp.hover_x = mx;
+        hp.hover_y = my;
+        hp.hover_since = state.now_seconds;
+        return;
+    }
+    if (hp.playing_path != entry.path) {
+        if (state.now_seconds - hp.hover_since < 0.6) return;  // wait for the pointer to rest
+        if (!cryptvault::FfmpegAvailable()) {
+            if (!hp.warned_no_ffmpeg) {
+                hp.warned_no_ffmpeg = true;
+                PushToast(state, "INSTALL FFMPEG TO PREVIEW VIDEOS");
+            }
+            return;
+        }
+        hp.have_frame = false;
+        if (hp.player.Start(entry.path, kPreviewFrameW, kPreviewFrameH)) hp.playing_path = entry.path;
+        else return;
+    }
+
+    // Newest decoded frame -> GPU texture (created on the first frame, then updated in place).
+    std::vector<unsigned char> frame;
+    if (hp.player.TakeFrame(frame)) {
+        if (hp.texture < 0) {
+            hp.texture = ui.Raw().CreateTexture(frame.data(), kPreviewFrameW, kPreviewFrameH, "video-preview");
+        } else {
+            ui.Raw().UpdateTexture(hp.texture, frame.data(), kPreviewFrameW, kPreviewFrameH);
+        }
+        hp.have_frame = hp.texture >= 0;
+    }
+
+    // Popup beside the pointer, flipped to stay inside the window.
+    const float scale = state.content_width >= 700.0f ? 1.0f : 0.625f;  // "a little bigger" than a tile, smaller in the compact window
+    const float vw = kPreviewFrameW * scale, vh = kPreviewFrameH * scale;
+    constexpr float kPad = 4.0f, kTitleH = 12.0f;
+    const float pw = vw + 2 * kPad, ph = vh + 2 * kPad + kTitleH;
+    float px = mx + 18.0f, py = my + 18.0f;
+    if (px + pw > state.content_width - 2.0f) px = mx - 18.0f - pw;
+    if (py + ph > state.content_height - kStatusBarHeight - 2.0f) py = my - 18.0f - ph;
+    px = std::max(2.0f, px);
+    py = std::max(kToolbarHeight + 2.0f, py);
+
+    ui.DrawRoundedRect(px, py, pw, ph, 5.0f, cryptvault::UiColor{0.05f, 0.06f, 0.06f, 0.97f});
+    ui.DrawRect(px + kPad, py + kPad, vw, vh, cryptvault::UiColor{0.0f, 0.0f, 0.0f, 1.0f});
+    if (hp.have_frame) {
+        ui.DrawImage(px + kPad, py + kPad, vw, vh, hp.texture);
+    } else {
+        std::string msg = hp.player.Failed() ? "CAN'T PREVIEW THIS VIDEO" : "LOADING...";
+        ui.DrawLabel(px + kPad + (vw - ui.MeasureText(msg, 1.0f)) * 0.5f, py + kPad + (vh - 7.0f) * 0.5f, msg,
+                     palette::kTextMuted, 1.0f);
+    }
+    ui.DrawLabel(px + kPad, py + kPad + vh + 4.0f, TruncateToWidth(ui, entry.name, vw), palette::kTextMuted, 1.0f);
+}
+
+void DrawExplorerScreen(ContentRenderer& ui, const Icons& icons, AppState& state) {
+    ExplorerState& ex = state.explorer;
+    ExplorerInit(state);
+    if (ex.needs_reload) ExplorerReload(state);
+    if (ex.searching && ex.search_shared) {  // background search finished?
+        std::lock_guard<std::mutex> lock(ex.search_shared->mutex);
+        if (ex.search_shared->done && ex.search_shared->gen == ex.search_gen) {
+            ex.entries = std::move(ex.search_shared->results);
+            ex.search_truncated = ex.search_shared->truncated;
+            ex.load_error = ex.search_shared->error;
+            ex.search_shared->done = false;
+            ex.searching = false;
+            ex.multi.assign(ex.entries.size(), 0);
+        }
+    }
+
+    float sidebar_w = state.content_width >= 600.0f ? 140.0f : 0.0f;
+    float area_y = kToolbarHeight;
+    float area_h = state.content_height - area_y - kStatusBarHeight;
+    float grid_w = state.content_width - sidebar_w;
+
+    if (sidebar_w > 0.0f) DrawExplorerSidebar(ui, icons, state, sidebar_w);
+
+    // The tile grid draws from x = 0 in its own space, so give it a
+    // renderer shifted past the sidebar and a mouse position shifted to match.
+    ContentRenderer grid_ui(ui.Raw(), kBorder + sidebar_w, kBorder);
+    cryptvault::UiInput grid_input = state.input;
+    grid_input.mouse_x -= sidebar_w;
+
+    const int prev_selected = ex.selected;  // DrawTileGrid overwrites it on click; Ctrl+click needs the old one
+    TileGridResult result = DrawTileGrid(grid_ui, icons, area_y, area_h, grid_w, ex.entries, icons.folder,
+                                         &ex.selected, -1, "", ex.add_hover, ex.scroll, EffectiveDt(state),
+                                         grid_input, state.explorer_drag, /*allow_reorder=*/false, &ex.multi);
+    if (ex.multi.size() != ex.entries.size()) ex.multi.assign(ex.entries.size(), 0);
+
+    // Selection: Ctrl+click toggles, Shift+click selects a range, a plain
+    // click selects one, a click on empty space clears.
+    if (state.input.clicked) {
+        const int hit = result.hovered_index;
+        const bool in_grid = HitTest(grid_input, 0, area_y, grid_w, area_h);
+        if (hit >= 0 && hit < static_cast<int>(ex.entries.size())) {
+            if (state.input.key_ctrl) {
+                if (prev_selected >= 0 && prev_selected < static_cast<int>(ex.multi.size())) ex.multi[prev_selected] = 1;
+                ex.multi[hit] = ex.multi[hit] ? 0 : 1;
+                ex.anchor = hit;
+                ex.selected = ex.multi[hit] ? hit : -1;
+            } else if (state.input.key_shift && ex.anchor >= 0 && ex.anchor < static_cast<int>(ex.entries.size())) {
+                std::fill(ex.multi.begin(), ex.multi.end(), 0);
+                for (int i = std::min(ex.anchor, hit); i <= std::max(ex.anchor, hit); ++i) ex.multi[i] = 1;
+                ex.selected = hit;
+            } else {
+                std::fill(ex.multi.begin(), ex.multi.end(), 0);
+                ex.anchor = hit;
+                ex.selected = hit;
+            }
+        } else if (in_grid && !state.input.key_ctrl && !state.input.key_shift) {
+            std::fill(ex.multi.begin(), ex.multi.end(), 0);
+            ex.selected = -1;
+        }
+    }
+    // Right-clicking a tile that isn't selected selects just it.
+    if (state.input.right_clicked && result.right_clicked >= 0 && !ex.multi[result.right_clicked]) {
+        std::fill(ex.multi.begin(), ex.multi.end(), 0);
+        ex.selected = result.right_clicked;
+        ex.anchor = result.right_clicked;
+    }
+
+    if (ex.entries.empty()) {
+        std::string msg = ex.searching ? "SEARCHING..."
+                          : !ex.load_error.empty() ? "CAN'T READ THIS FOLDER"
+                          : (!ex.filter.empty() || ex.search_mode) ? "NO MATCHES"
+                          : (ex.in_trash ? "THE TRASH IS EMPTY" : "EMPTY FOLDER");
+        ui.DrawLabel(sidebar_w + (grid_w - ui.MeasureText(msg, 1.0f)) * 0.5f, area_y + area_h * 0.4f, msg, palette::kTextMuted, 1.0f);
+        if (!ex.load_error.empty()) {
+            std::string detail = TruncateToWidth(ui, ex.load_error, grid_w - 20.0f);
+            ui.DrawLabel(sidebar_w + (grid_w - ui.MeasureText(detail, 1.0f)) * 0.5f, area_y + area_h * 0.4f + 12.0f, detail, palette::kTextMuted, 1.0f);
+        }
+    }
+
+    // Right-click: on a tile -> its menu; on empty space inside the grid -> the folder menu.
+    if (state.input.right_clicked) {
+        bool in_grid = HitTest(grid_input, 0, area_y, grid_w, area_h);
+        if (result.right_clicked >= 0 || (in_grid && result.hovered_index < 0)) {
+            ExplorerState::Menu menu;
+            menu.open = true;
+            menu.index = result.right_clicked;
+            menu.x = state.input.mouse_x;
+            menu.y = state.input.mouse_y;
+            if (result.right_clicked >= 0) ex.selected = result.right_clicked;
+            ex.menu = menu;
+        }
+    }
+    if (result.double_clicked >= 0) ExplorerActivate(state, result.double_clicked);
+    if (result.delete_requested >= 0) {
+        if (ex.cwd == TrashFilesDir()) {
+            ex.confirm.kind = ExplorerState::ConfirmKind::DeleteForever;
+            ex.confirm.name = ex.entries[result.delete_requested].path;
+        } else if (!ex.in_trash) {
+            ExplorerTrashEntry(state, result.delete_requested);
+        }
+    }
+
+    // Files dragged in from another app are COPIED into the open folder.
+    if (!state.input.dropped_paths.empty()) {
+        if (ex.in_trash) {
+            PushToast(state, "CAN'T DROP INTO THE TRASH");
+        } else {
+            int ok = 0;
+            std::string error;
+            for (const std::string& src : state.input.dropped_paths) {
+                std::string name = std::filesystem::path(src).filename().string();
+                if (name.empty()) continue;
+                if (cvfs::Copy(src, ex.cwd + "/" + cvfs::UniqueName(ex.cwd, name), error)) ++ok;
+                else PushToast(state, "COULDN'T COPY: " + error);
+            }
+            if (ok > 0) PushToast(state, "COPIED " + std::to_string(ok) + (ok == 1 ? " ITEM HERE" : " ITEMS HERE"));
+            ex.needs_reload = true;
+        }
+    }
+
+    // Keyboard: Backspace = up, Enter = open selection, arrows = move selection (grid is 5 wide).
+    //   Ctrl+A select all   Ctrl+C / Ctrl+X / Ctrl+V   Delete = trash   F2 = rename
+    //   Ctrl+F = find (type to filter, Enter searches subfolders)   Ctrl+L = type a path
+    if (ex.keys_enabled && !ex.address.active && !ex.filter_active) {
+        int count = static_cast<int>(ex.entries.size());
+        if (state.input.key_a && count > 0) std::fill(ex.multi.begin(), ex.multi.end(), 1);
+        if (state.input.key_c && state.input.key_shift) ExplorerCopyPaths(state, ExplorerSelection(state));  // Ctrl+Shift+C
+        else if (state.input.key_c) ExplorerCopyToClipboard(state, ExplorerSelection(state), false);
+        if (state.input.key_x && !ex.in_trash) ExplorerCopyToClipboard(state, ExplorerSelection(state), true);
+        if (state.input.key_v && !ex.in_trash && !ex.search_mode) ExplorerPaste(state, ex.cwd);
+        if (state.input.key_f) { ex.filter_active = true; ex.address.active = false; }
+        if (state.input.key_l) { ex.address.active = true; ex.address.fresh = true; ex.address.buffer = ex.cwd; }
+        if (state.input.key_f2 && !ex.in_trash) {
+            std::vector<int> sel = ExplorerSelection(state);
+            if (sel.size() == 1) ExplorerRunMenuAction(state, "RENAME", sel[0]);
+        }
+        if (state.input.key_delete) {
+            std::vector<int> sel = ExplorerSelection(state);
+            if (!sel.empty()) {
+                if (ex.cwd == TrashFilesDir()) {
+                    ex.confirm.kind = ExplorerState::ConfirmKind::DeleteForever;
+                    ex.confirm.name = ex.entries[sel[0]].path;
+                } else if (!ex.in_trash) {
+                    ExplorerTrashEntries(state, sel);
+                }
+            }
+        }
+        if (state.input.key_backspace) ExplorerGoUp(state);
+        if (state.input.key_enter && ex.selected >= 0 && ex.selected < count) ExplorerActivate(state, ex.selected);
+        if (state.input.key_down && count > 0) {
+            ex.selected = ex.selected < 0 ? 0 : std::min(count - 1, ex.selected + 5);
+            std::fill(ex.multi.begin(), ex.multi.end(), 0);
+            ex.anchor = ex.selected;
+        }
+        if (state.input.key_up && count > 0) {
+            ex.selected = ex.selected < 0 ? 0 : std::max(0, ex.selected - 5);
+            std::fill(ex.multi.begin(), ex.multi.end(), 0);
+            ex.anchor = ex.selected;
+        }
+    }
+
+    DrawExplorerFilterBar(ui, state);
+    UpdateAndDrawHoverPreview(ui, state, result);
+
+    std::string status = ex.load_error.empty()
+        ? std::to_string(ex.entries.size()) + (ex.entries.size() == 1 ? " ITEM" : " ITEMS")
+        : std::string("UNREADABLE");
+    if (ex.searching) status = "SEARCHING...";
+    if (ex.search_mode && !ex.searching) status = "SEARCH  |  " + status + (ex.search_truncated ? "+ (TRUNCATED)" : "");
+    if (ex.in_trash) status = "TRASH  |  " + status;
+    size_t picked = 0;
+    for (char m : ex.multi) picked += m ? 1 : 0;
+    if (picked > 1) {
+        status += "  |  " + std::to_string(picked) + " SELECTED";
+    } else if (ex.selected >= 0 && ex.selected < static_cast<int>(ex.entries.size())) {
+        const cvfs::Entry& e = ex.entries[ex.selected];
+        status += "  |  " + e.name + (e.is_dir ? "" : "  " + cvfs::HumanSize(e.size));
+    }
+    status = TruncateToWidth(ui, status, state.content_width - 120.0f);
+    DrawStatusBar(ui, state.content_width, state.content_height, status, icons.background >= 0);
+}
+
 // One command palette entry: a label to match/display and an action
 // to run when it's chosen. `enabled` lets a command exist in the list
 // but be visibly (and functionally) unavailable given the current
@@ -3301,6 +4880,52 @@ struct PaletteCommand {
 std::vector<PaletteCommand> BuildPaletteCommands(AppState& state) {
     std::vector<PaletteCommand> commands;
 
+    const bool on_files = state.screen == Screen::Explorer;
+    commands.push_back({"GO TO FILES", !on_files, [](AppState& s) { SwitchSide(s, false); }});
+    commands.push_back({"GO TO VAULTS", on_files, [](AppState& s) { SwitchSide(s, true); }});
+    if (on_files) {
+        for (const cvfs::Place& place : state.explorer.places) {
+            std::string label = "GO TO " + place.name;
+            for (char& c : label) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            std::string path = place.path;
+            commands.push_back({label, true, [path](AppState& s) { ExplorerNavigate(s, path); }});
+        }
+        commands.push_back({"NEW FOLDER", !state.explorer.in_trash, [](AppState& s) {
+            s.explorer.prompt = ExplorerState::Prompt{};
+            s.explorer.prompt.kind = ExplorerState::PromptKind::NewFolder;
+            s.command_palette.open = false;
+        }});
+        commands.push_back({state.explorer.list_options.show_hidden ? "HIDE HIDDEN FILES" : "SHOW HIDDEN FILES", true,
+                            [](AppState& s) {
+                                s.explorer.list_options.show_hidden = !s.explorer.list_options.show_hidden;
+                                s.explorer.needs_reload = true;
+                            }});
+        struct SortCmd { const char* label; cvfs::SortKey key; };
+        const SortCmd sorts[] = {{"SORT BY NAME", cvfs::SortKey::Name}, {"SORT BY SIZE", cvfs::SortKey::Size},
+                                 {"SORT BY DATE", cvfs::SortKey::Modified}, {"SORT BY TYPE", cvfs::SortKey::Type}};
+        for (const SortCmd& sc : sorts) {
+            cvfs::SortKey key = sc.key;
+            commands.push_back({sc.label, true, [key](AppState& s) {
+                s.explorer.list_options.sort = key;
+                s.explorer.needs_reload = true;
+            }});
+        }
+        commands.push_back({"REVERSE SORT ORDER", true, [](AppState& s) {
+            s.explorer.list_options.reverse = !s.explorer.list_options.reverse;
+            s.explorer.needs_reload = true;
+        }});
+    }
+    if (on_files) {
+        commands.push_back({g_thumbnails.enabled ? "THUMBNAILS: ON" : "THUMBNAILS: OFF", true,
+                            [](AppState&) { g_thumbnails.enabled = !g_thumbnails.enabled; }});
+        commands.push_back({g_preview.enabled ? "VIDEO PREVIEW ON HOVER: ON" : "VIDEO PREVIEW ON HOVER: OFF", true,
+                            [](AppState&) {
+                                g_preview.enabled = !g_preview.enabled;
+                                if (!g_preview.enabled) StopHoverPreview();
+                            }});
+    }
+    commands.push_back({state.settings.lock_vaults_on_leave ? "LOCK VAULTS ON LEAVE: ON" : "LOCK VAULTS ON LEAVE: OFF", true,
+                        [](AppState& s) { s.settings.lock_vaults_on_leave = !s.settings.lock_vaults_on_leave; }});
     commands.push_back({"GO TO VAULT LIST", true, [](AppState& s) { s.screen = Screen::VaultList; }});
 
     commands.push_back({"ADD VAULT", true, [](AppState& s) { OpenCreateVaultWizard(s); }});
@@ -3331,6 +4956,7 @@ std::vector<PaletteCommand> BuildPaletteCommands(AppState& state) {
     }});
 
     commands.push_back({"REFRESH", true, [](AppState& s) {
+        s.explorer.needs_reload = true;
         s.selected_vault = -1;
         s.selected_folder = -1;
     }});
@@ -3387,7 +5013,7 @@ void DrawCommandPalette(ContentRenderer& ui, AppState& state) {
     // immediately rather than one frame late.
     state.command_palette.query += state.input.text_input;
     if (state.input.key_backspace && !state.command_palette.query.empty()) {
-        state.command_palette.query.pop_back();
+        PopLastCodepoint(state.command_palette.query);
     }
 
     std::vector<PaletteCommand> all_commands = BuildPaletteCommands(state);
@@ -3619,7 +5245,7 @@ void DrawRenamePanel(ContentRenderer& ui, AppState& state) {
 
     state.rename.buffer += state.input.text_input;
     if (state.input.key_backspace && !state.rename.buffer.empty()) {
-        state.rename.buffer.pop_back();
+        PopLastCodepoint(state.rename.buffer);
     }
 
     ui.DrawRect(0, 0, state.content_width, state.content_height,
@@ -3970,7 +5596,7 @@ void DrawLockScreen(ContentRenderer& ui, AppState& state) {
     // --- Password prompt panel -----------------------------------------
     state.lock.buffer += state.input.text_input;
     if (state.input.key_backspace && !state.lock.buffer.empty()) {
-        state.lock.buffer.pop_back();
+        PopLastCodepoint(state.lock.buffer);
     }
 
     ui.DrawRect(0, 0, state.content_width, state.content_height,
@@ -4053,7 +5679,7 @@ void DrawChangePasswordPanel(ContentRenderer& ui, AppState& state) {
 
     state.change_password.buffer += state.input.text_input;
     if (state.input.key_backspace && !state.change_password.buffer.empty()) {
-        state.change_password.buffer.pop_back();
+        PopLastCodepoint(state.change_password.buffer);
     }
 
     ui.DrawRect(0, 0, state.content_width, state.content_height,
@@ -4166,7 +5792,7 @@ void DrawUnlockPrompt(ContentRenderer& ui, AppState& state) {
 
     state.unlock_prompt.buffer += state.input.text_input;
     if (state.input.key_backspace && !state.unlock_prompt.buffer.empty()) {
-        state.unlock_prompt.buffer.pop_back();
+        PopLastCodepoint(state.unlock_prompt.buffer);
     }
 
     ui.DrawRect(0, 0, state.content_width, state.content_height,
@@ -4260,7 +5886,7 @@ void DrawCreateVaultWizard(ContentRenderer& ui, AppState& state) {
 
     state.create_vault_wizard.buffer += state.input.text_input;
     if (state.input.key_backspace && !state.create_vault_wizard.buffer.empty()) {
-        state.create_vault_wizard.buffer.pop_back();
+        PopLastCodepoint(state.create_vault_wizard.buffer);
     }
 
     ui.DrawRect(0, 0, state.content_width, state.content_height,
@@ -4866,7 +6492,53 @@ extern "C" CRYPTVAULT_UI_API UiApp* UiAppCreate(WGPUDevice device, WGPUQueue que
     return app;
 }
 
+extern "C" CRYPTVAULT_UI_API uint8_t UiAppConsumeClipboardRequest(UiApp* app, char* out, uint32_t capacity) {
+    if (!app || !out || capacity == 0) return 0;
+    std::lock_guard<std::mutex> lock(app->frame_mutex);
+    if (!app->state.has_clipboard_request) return 0;
+    std::snprintf(out, capacity, "%s", app->state.clipboard_request.c_str());
+    app->state.has_clipboard_request = false;
+    app->state.clipboard_request.clear();
+    return 1;
+}
+
+extern "C" CRYPTVAULT_UI_API uint8_t UiAppHandleEscape(UiApp* app) {
+    if (!app) return 0;
+    std::lock_guard<std::mutex> lock(app->frame_mutex);
+    AppState& s = app->state;
+    ExplorerState& ex = s.explorer;
+    // Topmost first: modal dialogs, then popups, then inline editors.
+    if (ex.confirm.kind != ExplorerState::ConfirmKind::None) { ex.confirm = ExplorerState::Confirm{}; return 1; }
+    if (ex.prompt.kind != ExplorerState::PromptKind::None) { ex.prompt = ExplorerState::Prompt{}; return 1; }
+    if (ex.menu.open) { ex.menu.open = false; return 1; }
+    if (s.pending_delete.active) { s.pending_delete = AppState::PendingDelete{}; return 1; }
+    if (s.rename.active) { s.rename = AppState::RenameState{}; return 1; }
+    if (s.unlock_prompt.open) { s.unlock_prompt = AppState::UnlockPrompt{}; return 1; }
+    if (s.command_palette.open) { s.command_palette.open = false; return 1; }
+    if (s.settings_panel_open) { s.settings_panel_open = false; return 1; }
+    if (s.context_menu.open) { s.context_menu.open = false; return 1; }
+    if (ex.address.active) { ex.address.active = false; return 1; }
+    if (ex.filter_active) { ex.filter_active = false; return 1; }
+    if (!ex.filter.empty() || ex.search_mode) {
+        ex.filter.clear();
+        ex.search_mode = false;
+        ex.needs_reload = true;
+        return 1;
+    }
+    if (!s.pending_encrypt.empty()) { s.pending_encrypt.clear(); return 1; }
+    return 0;
+}
+
+extern "C" CRYPTVAULT_UI_API void UiAppSetStart(UiApp* app, const char* start_path, uint8_t vault_side) {
+    if (!app) return;
+    std::lock_guard<std::mutex> lock(app->frame_mutex);
+    if (start_path && *start_path) app->state.explorer.pending_start = start_path;
+    app->state.screen = vault_side ? Screen::VaultList : Screen::Explorer;
+}
+
 extern "C" CRYPTVAULT_UI_API void UiAppDestroy(UiApp* app) {
+    cryptvault::CancelMediaJobs();   // let any queued ffmpeg work end now instead of delaying exit
+    StopHoverPreview();
     if (app && app->api_server) {
         // Explicit, not just relying on ~ApiServer via the unique_ptr
         // destructor below - makes the ordering intentional (stop the
@@ -4934,6 +6606,16 @@ extern "C" CRYPTVAULT_UI_API void UiAppBeginFrame(UiApp* app, uint32_t width, ui
     app->state.input.key_enter = input->key_enter != 0;
     app->state.input.key_up = input->key_up != 0;
     app->state.input.key_down = input->key_down != 0;
+    app->state.input.key_ctrl = input->key_ctrl != 0;
+    app->state.input.key_shift = input->key_shift != 0;
+    app->state.input.key_delete = input->key_delete != 0;
+    app->state.input.key_f2 = input->key_f2 != 0;
+    app->state.input.key_a = input->key_a != 0;
+    app->state.input.key_c = input->key_c != 0;
+    app->state.input.key_x = input->key_x != 0;
+    app->state.input.key_v = input->key_v != 0;
+    app->state.input.key_f = input->key_f != 0;
+    app->state.input.key_l = input->key_l != 0;
     app->state.input.dropped_paths.clear();
     for (int i = 0; i < static_cast<int>(input->dropped_paths_count); ++i) {
         app->state.input.dropped_paths.emplace_back(input->dropped_paths[i]);
@@ -4947,7 +6629,11 @@ extern "C" CRYPTVAULT_UI_API void UiAppBeginFrame(UiApp* app, uint32_t width, ui
     app->state.content_width = static_cast<float>(width) - 2.0f * kBorder;
     app->state.content_height = static_cast<float>(height) - 2.0f * kBorder;
 
-    app->ui.BeginFrame(width, height);
+    PumpThumbnails(app->ui);
+    if (app->state.screen != Screen::Explorer && (g_preview.player.Active() || !g_preview.hover_path.empty())) {
+        StopHoverPreview();
+    }
+    app->ui.BeginFrame(width, height, input->pixel_scale > 0.0f ? input->pixel_scale : 1.0f);
     app->ui.DrawRect(0, 0, static_cast<float>(width), static_cast<float>(height), kBorderColor);
     ContentRenderer content(app->ui, kBorder, kBorder);
 
@@ -4994,7 +6680,21 @@ extern "C" CRYPTVAULT_UI_API void UiAppBeginFrame(UiApp* app, uint32_t width, ui
     // working". The toolbar's buttons should always be live
     // regardless of what overlay (if any) is open; only the grid/tab
     // bar underneath needs masking while one is up.
-    DrawToolbar(content, app->icons, app->state);
+    bool explorer_modal = app->state.explorer.menu.open
+                           || app->state.explorer.prompt.kind != ExplorerState::PromptKind::None
+                           || app->state.explorer.confirm.kind != ExplorerState::ConfirmKind::None;
+    app->state.explorer.keys_enabled = !(explorer_modal || app->state.settings_panel_open
+                                         || app->state.command_palette.open || app->state.context_menu.open
+                                         || app->state.rename.active || app->state.pending_delete.active
+                                         || app->state.change_password.open || app->state.unlock_prompt.open
+                                         || app->state.create_vault_wizard.open || app->state.clear_all_data_pending
+                                         || app->state.border_menu.open);
+
+    if (app->state.screen == Screen::Explorer) {
+        DrawExplorerToolbar(content, app->icons, app->state);
+    } else {
+        DrawToolbar(content, app->icons, app->state);
+    }
 
     // While a delete confirmation, the settings panel, the command
     // palette, a context menu, a rename panel, or the change-password
@@ -5002,7 +6702,7 @@ extern "C" CRYPTVAULT_UI_API void UiAppBeginFrame(UiApp* app, uint32_t width, ui
     // stay visible) but shouldn't react to clicks - only that
     // overlay's own controls should be. Restored immediately after,
     // so the overlays themselves (drawn below) still see real input.
-    bool overlay_active = app->state.pending_delete.active || app->state.settings_panel_open
+    bool overlay_active = explorer_modal || app->state.pending_delete.active || app->state.settings_panel_open
                            || app->state.command_palette.open || app->state.context_menu.open
                            || app->state.rename.active || app->state.change_password.open
                            || app->state.unlock_prompt.open || app->state.create_vault_wizard.open
@@ -5023,11 +6723,14 @@ extern "C" CRYPTVAULT_UI_API void UiAppBeginFrame(UiApp* app, uint32_t width, ui
         app->state.input.scroll_delta_y = 0.0f;
     }
 
-    if (app->state.screen == Screen::VaultList) {
+    if (app->state.screen == Screen::Explorer) {
+        DrawExplorerScreen(content, app->icons, app->state);
+    } else if (app->state.screen == Screen::VaultList) {
         DrawVaultListScreen(content, app->icons, app->state);
     } else {
         DrawVaultFolderScreen(content, app->icons, app->state);
     }
+    DrawSideSwitch(content, app->state);  // inside the masked region: ignores clicks under a modal
 
     if (overlay_active) {
         app->state.input.clicked = real_clicked;
@@ -5043,6 +6746,9 @@ extern "C" CRYPTVAULT_UI_API void UiAppBeginFrame(UiApp* app, uint32_t width, ui
     DrawSettingsPanel(content, app->state, app->icons);
     DrawCommandPalette(content, app->state);
     DrawContextMenu(content, app->state);
+    DrawExplorerMenu(content, app->state);
+    DrawExplorerPrompt(content, app->state);
+    DrawExplorerConfirm(content, app->state);
     DrawRenamePanel(content, app->state);
     DrawChangePasswordPanel(content, app->state);
     DrawUnlockPrompt(content, app->state);

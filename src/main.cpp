@@ -1,80 +1,73 @@
-// main.cpp - process shell for CryptVault.
-//
-// Owns the window and GPU device and drives the UI (app_ui.cpp, compiled
-// directly into this binary - see UiAppCreate/UiAppBeginFrame/UiAppEndFrame
-// in ui/app_ui.h) once per frame.
-
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
+#include "cli/cli.h"
+#endif
 #include "gpu/gpu_context.h"
 #include "ui/app_ui.h"
 #include "ui/ui_renderer.h"
 #include "window/window.h"
 
 namespace {
+    constexpr int kSmallWindowWidth = 400;
+    constexpr int kSmallWindowHeight = 300;
+    constexpr int kLargeWindowWidth = 900;
+    constexpr int kLargeWindowHeight = 600;
+    constexpr float kBorder = 17.0f;
+    constexpr cryptvault::UiColor kBorderColor{0.200f, 0.247f, 0.302f, 1.0f};
 
-// Two fixed window sizes the top-left resize-toggle button (see
-// app_ui.cpp's DrawResizeToggle) switches between; 400x300 is the
-// startup default.
-//
-// NOTE: app_ui.cpp keeps its own copies of these same numbers (it's
-// a separate translation unit and can't depend on this exe's
-// headers) - the two must be changed together or the border
-// hit-testing here and the layout there will disagree about where
-// content-space starts.
-constexpr int kSmallWindowWidth = 400;
-constexpr int kSmallWindowHeight = 300;
-constexpr int kLargeWindowWidth = 900;
-constexpr int kLargeWindowHeight = 600;
-constexpr float kBorder = 17.0f;
-constexpr cryptvault::UiColor kBorderColor{0.200f, 0.247f, 0.302f, 1.0f};
+    struct InputState {
+        float mouse_x = -1.0f;
+        float mouse_y = -1.0f;
+        bool mouse_down = false;
+        bool clicked = false;
+        bool double_clicked = false;
+        bool right_clicked = false;
+        float scroll_delta_y = 0.0f;
 
-struct InputState {
-    float mouse_x = -1.0f;
-    float mouse_y = -1.0f;
-    bool mouse_down = false;
-    bool clicked = false;
-    bool double_clicked = false;
-    // Right mouse button release, one-shot like `clicked` - opens a
-    // tile's context menu (see DrawTileGrid/DrawContextMenu). Doesn't
-    // participate in the border-drag or double-click logic below;
-    // right-click has no OS-chrome-drag or double-click meaning here.
-    bool right_clicked = false;
-    // Accumulated since the last frame was sent to the UI side (see
-    // on_scroll below and the reset at the bottom of DrawFrame) -
-    // GLFW can deliver more than one scroll event between frames, so
-    // this sums them rather than keeping only the latest.
-    float scroll_delta_y = 0.0f;
+        std::string text_input;
+        bool key_backspace = false;
+        bool key_enter = false;
+        bool key_up = false;
+        bool key_down = false;
+        bool key_ctrl = false;
+        bool key_shift = false;
+        bool key_delete = false;
+        bool key_f2 = false;
+        bool key_a = false;
+        bool key_c = false;
+        bool key_x = false;
+        bool key_v = false;
+        bool key_f = false;
+        bool key_l = false;
 
-    // Text typed since the last frame (see on_char below) - reset the
-    // same way as the click flags. ASCII-filtered here rather than in
-    // the UI side, since that's where GLFW's raw codepoints arrive.
-    std::string text_input;
-    bool key_backspace = false;
-    bool key_enter = false;
-    bool key_up = false;
-    bool key_down = false;
+        std::vector<std::string> dropped_paths;
+    };
 
-    // Absolute filesystem paths dropped onto the window since the
-    // last frame (see window.on_files_dropped below) - reset the same
-    // way as the click flags, after being copied into UiAppInput's
-    // fixed-size array for this frame.
-    std::vector<std::string> dropped_paths;
-};
+}
 
-}  // namespace
+int main(int argc, char** argv) {
+#ifndef _WIN32
+    cvcli::GuiLaunch launch;
+    int cli_rc = cvcli::Run(argc, argv, launch);
+    if (cli_rc != cvcli::kLaunchGui) return cli_rc;
+#else
+    (void)argc;
+    (void)argv;
+#endif
 
-int main() {
     cryptvault::WindowConfig window_config;
     window_config.title = "CryptVault";
-    window_config.width = kSmallWindowWidth;
-    window_config.height = kSmallWindowHeight;
+    window_config.width = kLargeWindowWidth;
+    window_config.height = kLargeWindowHeight;
     window_config.resizable = false;
     window_config.decorated = false;
 
@@ -100,6 +93,10 @@ int main() {
         return 1;
     }
 
+#ifndef _WIN32
+    UiAppSetStart(ui_app, launch.start_path.c_str(), launch.vault_side ? 1 : 0);
+#endif
+
     InputState input;
 
     struct DragState {
@@ -116,7 +113,7 @@ int main() {
         input.mouse_x = static_cast<float>(x) - kBorder;
         input.mouse_y = static_cast<float>(y) - kBorder;
 
-        if (drag.active) {
+        if (drag.active && !window.IsWayland()) {
             int window_x = 0, window_y = 0;
             glfwGetWindowPos(window.handle(), &window_x, &window_y);
             int dx = static_cast<int>(x - drag.anchor_x);
@@ -137,20 +134,16 @@ int main() {
         if (action == GLFW_PRESS) {
             input.mouse_down = true;
 
-            // Content bounds depend on the *current* window size,
-            // which can now change at runtime (see the resize-toggle
-            // button) - so this is computed fresh here rather than
-            // from a fixed compile-time constant.
-            uint32_t fb_width = 0, fb_height = 0;
-            window.GetFramebufferSize(&fb_width, &fb_height);
-            float content_width = static_cast<float>(fb_width) - 2.0f * kBorder;
-            float content_height = static_cast<float>(fb_height) - 2.0f * kBorder;
+            uint32_t win_width = 0, win_height = 0;
+            window.GetLogicalSize(&win_width, &win_height);
+            float content_width = static_cast<float>(win_width) - 2.0f * kBorder;
+            float content_height = static_cast<float>(win_height) - 2.0f * kBorder;
 
             bool in_border = input.mouse_x < 0.0f
                               || input.mouse_x > content_width
                               || input.mouse_y < 0.0f
                               || input.mouse_y > content_height;
-            if (in_border) {
+            if (in_border && !window.IsWayland()) {
                 drag.active = true;
                 glfwGetCursorPos(window.handle(), &drag.anchor_x, &drag.anchor_y);
             }
@@ -183,14 +176,24 @@ int main() {
         }
     };
 
-    window.on_key = [&window, &input](int key, int action) {
+    window.on_key = [&window, &input, &ui_app](int key, int action) {
         if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
-            window.RequestClose();
+            if (!UiAppHandleEscape(ui_app)) window.RequestClose();
         }
-        // PRESS or REPEAT so holding Backspace/Up/Down behaves like
-        // any normal text field; Enter only fires on the initial
-        // press (holding it down repeatedly re-submitting isn't
-        // useful for the command palette's "execute selected" case).
+        if (action == GLFW_PRESS || action == GLFW_REPEAT) {
+            const bool ctrl = glfwGetKey(window.handle(), GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS
+                              || glfwGetKey(window.handle(), GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+            if (key == GLFW_KEY_DELETE) input.key_delete = true;
+            if (key == GLFW_KEY_F2 && action == GLFW_PRESS) input.key_f2 = true;
+            if (ctrl && action == GLFW_PRESS) {
+                if (key == GLFW_KEY_A) input.key_a = true;
+                if (key == GLFW_KEY_C) input.key_c = true;
+                if (key == GLFW_KEY_X) input.key_x = true;
+                if (key == GLFW_KEY_V) input.key_v = true;
+                if (key == GLFW_KEY_F) input.key_f = true;
+                if (key == GLFW_KEY_L) input.key_l = true;
+            }
+        }
         if (key == GLFW_KEY_BACKSPACE && (action == GLFW_PRESS || action == GLFW_REPEAT)) {
             input.key_backspace = true;
         }
@@ -206,90 +209,62 @@ int main() {
     };
 
     window.on_char = [&input](unsigned int codepoint) {
-        // Drop anything outside printable ASCII - the 5x7 bitmap font
-        // (see font5x7.h) only has glyphs for that range anyway, and
-        // silently keeping wider Unicode here would just mean it gets
-        // typed into the buffer and then rendered as blank glyphs.
         if (codepoint >= 32 && codepoint < 127) {
             input.text_input += static_cast<char>(codepoint);
+        } else if (codepoint >= 0xA0 && codepoint <= 0x10FFFF && !(codepoint >= 0xD800 && codepoint <= 0xDFFF)) {
+            if (codepoint < 0x800) {
+                input.text_input += static_cast<char>(0xC0 | (codepoint >> 6));
+                input.text_input += static_cast<char>(0x80 | (codepoint & 0x3F));
+            } else if (codepoint < 0x10000) {
+                input.text_input += static_cast<char>(0xE0 | (codepoint >> 12));
+                input.text_input += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+                input.text_input += static_cast<char>(0x80 | (codepoint & 0x3F));
+            } else {
+                input.text_input += static_cast<char>(0xF0 | (codepoint >> 18));
+                input.text_input += static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
+                input.text_input += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+                input.text_input += static_cast<char>(0x80 | (codepoint & 0x3F));
+            }
         }
     };
 
     window.on_scroll = [&input](double /*dx*/, double dy) {
         input.scroll_delta_y += static_cast<float>(dy);
     };
-
-    // GLFW's drop callback is already cross-platform (OLE on Windows,
-    // XDND on X11) - no per-OS code needed on this side for "drag
-    // files from the OS into CryptVault". The reverse direction
-    // (dragging a file *out* of CryptVault to the OS) is a
-    // fundamentally different, genuinely platform-specific thing -
-    // GLFW has no API for initiating an OS-level drag - and isn't
-    // implemented here.
     window.on_files_dropped = [&input](int count, const char** paths) {
         for (int i = 0; i < count; ++i) {
             input.dropped_paths.emplace_back(paths[i]);
         }
     };
-
-    // Elapsed-time clamp for dt_seconds (see UiAppInput's comment):
-    // caps any single frame's delta so a debugger pause, or the OS
-    // briefly starving this process, can't hand the UI side a multi-
-    // second dt that would make an in-flight animation jump straight
-    // to its end state instead of animating.
-    constexpr double kMaxDtSeconds = 0.1;
     double last_frame_time = glfwGetTime();
-
-    // A resize requested by the UI side (see DrawResizeToggle) during
-    // *this* frame's BeginFrame/EndFrame. Applying window.SetSize()
-    // (and therefore gpu.Resize()) immediately - between this frame's
-    // BeginFrame and its RenderFrame, as the code used to do - meant
-    // the render pass at the end of the frame ran against a surface
-    // that had just been reconfigured to a new size, while the vertex/
-    // scissor data the UI side just built in BeginFrame was still
-    // sized for the *old* width/height. wgpu validates scissor/viewport
-    // rects against the current surface texture, so a rect computed
-    // for 900x600 submitted against a freshly-reconfigured 400x300
-    // surface (or vice versa) is invalid; that single invalid call
-    // poisons the whole command encoder, so wgpuCommandEncoderFinish/
-    // wgpuQueueSubmit both fail with "Command encoder is invalid" -
-    // exactly the crash reported when toggling the window size back
-    // and forth.
-    //
-    // The fix: never resize mid-frame. Stash the request and apply it
-    // at the very top of the *next* frame, before that frame reads
-    // the framebuffer size or calls BeginFrame - so every frame's
-    // BeginFrame/RenderFrame pair agrees on one consistent size, and
-    // the resize itself costs one frame of latency (imperceptible)
-    // rather than a crash.
     bool has_pending_resize = false;
     uint32_t pending_resize_width = 0;
     uint32_t pending_resize_height = 0;
-
-    // Tracks the "always on top" state actually applied to the real
-    // GLFW window, so it's only re-applied when the UI side's desired
-    // state (see UiAppGetAlwaysOnTop) actually changes, not every
-    // single frame.
     bool applied_always_on_top = false;
 
     auto DrawFrame = [&]() {
         if (has_pending_resize) {
             has_pending_resize = false;
-            // Triggers on_resize -> gpu.Resize() synchronously, so by
-            // the time GetFramebufferSize() runs just below, the GPU
-            // surface and the framebuffer size this frame reads are
-            // already consistent with each other.
             window.SetSize(static_cast<int>(pending_resize_width),
                             static_cast<int>(pending_resize_height));
         }
 
+        uint32_t fb_width = 0, fb_height = 0;
+        window.GetFramebufferSize(&fb_width, &fb_height);
         uint32_t width = 0, height = 0;
-        window.GetFramebufferSize(&width, &height);
-        if (width == 0 || height == 0) return;
+        window.GetLogicalSize(&width, &height);
+        if (fb_width == 0 || fb_height == 0 || width == 0 || height == 0) return;
+        const float pixel_scale = static_cast<float>(fb_width) / static_cast<float>(width);
+        static uint32_t logged_fb_width = 0;
+        if (logged_fb_width != fb_width && std::getenv("CRYPTVAULT_DEBUG")) {
+            logged_fb_width = fb_width;
+            std::fprintf(stderr, "[cryptvault] window %ux%u, framebuffer %ux%u (scale %.3f), platform %s\n", width, height,
+                         fb_width, fb_height, pixel_scale, window.IsWayland() ? "wayland" : "x11");
+        }
 
         double now = glfwGetTime();
         double dt = now - last_frame_time;
-        if (dt < 0.0) dt = 0.0;  // glfwGetTime() is monotonic, but be defensive.
+        if (dt < 0.0) dt = 0.0;
         if (dt > kMaxDtSeconds) dt = kMaxDtSeconds;
         last_frame_time = now;
 
@@ -300,20 +275,41 @@ int main() {
         ui_input.clicked = input.clicked ? 1 : 0;
         ui_input.double_clicked = input.double_clicked ? 1 : 0;
         ui_input.right_clicked = input.right_clicked ? 1 : 0;
+        ui_input.pixel_scale = pixel_scale;
         ui_input.now_seconds = now;
         ui_input.dt_seconds = static_cast<float>(dt);
         ui_input.scroll_delta_y = input.scroll_delta_y;
 
-        // Truncate to the fixed buffer's capacity (see UiAppInput's
-        // comment) - a single frame's typing is realistically 0-1
-        // characters, so this is just a defensive cap, not something
-        // expected to actually trim real input.
         std::snprintf(ui_input.text_input, sizeof(ui_input.text_input), "%s",
                        input.text_input.c_str());
+        {
+            size_t n = std::strlen(ui_input.text_input);
+            size_t k = n;
+            while (k > 0 && (static_cast<unsigned char>(ui_input.text_input[k - 1]) & 0xC0) == 0x80) --k;
+            if (k > 0 && static_cast<unsigned char>(ui_input.text_input[k - 1]) >= 0xC0) {
+                size_t need = static_cast<unsigned char>(ui_input.text_input[k - 1]) >= 0xF0 ? 4
+                              : static_cast<unsigned char>(ui_input.text_input[k - 1]) >= 0xE0 ? 3 : 2;
+                if (n - (k - 1) < need) ui_input.text_input[k - 1] = '\0';
+            }
+        }
         ui_input.key_backspace = input.key_backspace ? 1 : 0;
         ui_input.key_enter = input.key_enter ? 1 : 0;
         ui_input.key_up = input.key_up ? 1 : 0;
         ui_input.key_down = input.key_down ? 1 : 0;
+        input.key_ctrl = glfwGetKey(window.handle(), GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS
+                         || glfwGetKey(window.handle(), GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+        input.key_shift = glfwGetKey(window.handle(), GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS
+                          || glfwGetKey(window.handle(), GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+        ui_input.key_ctrl = input.key_ctrl ? 1 : 0;
+        ui_input.key_shift = input.key_shift ? 1 : 0;
+        ui_input.key_delete = input.key_delete ? 1 : 0;
+        ui_input.key_f2 = input.key_f2 ? 1 : 0;
+        ui_input.key_a = input.key_a ? 1 : 0;
+        ui_input.key_c = input.key_c ? 1 : 0;
+        ui_input.key_x = input.key_x ? 1 : 0;
+        ui_input.key_v = input.key_v ? 1 : 0;
+        ui_input.key_f = input.key_f ? 1 : 0;
+        ui_input.key_l = input.key_l ? 1 : 0;
 
         ui_input.dropped_paths_count_actual = static_cast<uint8_t>(
             std::min<size_t>(input.dropped_paths.size(), 255));
@@ -327,14 +323,6 @@ int main() {
 
         UiAppBeginFrame(ui_app, width, height, &ui_input);
 
-        // The UI side (see app_ui.cpp's DrawResizeToggle) can request
-        // the window be resized - only this side owns the actual GLFW
-        // window, so it's the one that has to act on it. Don't apply
-        // it now, though: this frame's RenderFrame call below still
-        // needs to run against the *current* surface size, matching
-        // what BeginFrame just built. Stash the request and apply it
-        // at the top of next frame instead (see the comment on
-        // has_pending_resize above).
         uint32_t requested_width = 0, requested_height = 0;
         if (UiAppConsumeResizeRequest(ui_app, &requested_width, &requested_height)) {
             has_pending_resize = true;
@@ -342,6 +330,12 @@ int main() {
             pending_resize_height = requested_height;
         }
 
+        {
+            static char clip[16384];
+            if (UiAppConsumeClipboardRequest(ui_app, clip, sizeof(clip))) {
+                glfwSetClipboardString(window.handle(), clip);
+            }
+        }
         if (UiAppConsumeQuitRequest(ui_app)) {
             window.RequestClose();
         }
@@ -366,6 +360,8 @@ int main() {
         input.key_enter = false;
         input.key_up = false;
         input.key_down = false;
+        input.key_delete = input.key_f2 = input.key_a = input.key_c = false;
+        input.key_x = input.key_v = input.key_f = input.key_l = false;
         input.dropped_paths.clear();
     };
 

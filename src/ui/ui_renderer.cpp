@@ -1,8 +1,11 @@
 // ui_renderer.cpp - see ui_renderer.h for scope notes.
 
+#include "ui/bidi.h"
+#include "ui/unicode_font.h"
 #include "ui/ui_renderer.h"
 
 #include <algorithm>
+#include <memory>
 #include <cctype>
 #include <cstddef>
 #include <cstdio>
@@ -686,11 +689,104 @@ int UiRenderer::UploadTexture(const unsigned char* pixels, int width, int height
     }
 
     IconTexture icon;
+    icon.width = width;
+    icon.height = height;
     icon.texture = texture;
     icon.view = view;
     icon.bind_group = bind_group;
+    if (!free_icon_slots_.empty()) {  // reuse a released slot so handles don't grow without bound
+        int slot = free_icon_slots_.back();
+        free_icon_slots_.pop_back();
+        icons_[slot] = icon;
+        return slot;
+    }
     icons_.push_back(icon);
     return static_cast<int>(icons_.size()) - 1;
+}
+
+bool DecodeThumbnailRgba(const std::string& path, int box, std::vector<unsigned char>& out) {
+    int width = 0, height = 0, comp = 0;
+    // Check the header first so a huge or non-image file is rejected cheaply.
+    if (!stbi_info(path.c_str(), &width, &height, &comp) || width <= 0 || height <= 0
+        || static_cast<int64_t>(width) * height > 60000000) {
+        return false;
+    }
+    stbi_uc* pixels = stbi_load(path.c_str(), &width, &height, &comp, 4);
+    if (!pixels) return false;
+
+    const float scale = static_cast<float>(box) / static_cast<float>(std::max(width, height));
+    const int tw = std::max(1, std::min(box, static_cast<int>(width * scale + 0.5f)));
+    const int th = std::max(1, std::min(box, static_cast<int>(height * scale + 0.5f)));
+    out.assign(static_cast<size_t>(box) * box * 4, 0);
+    const int ox = (box - tw) / 2, oy = (box - th) / 2;
+    for (int y = 0; y < th; ++y) {
+        const int sy0 = y * height / th;
+        const int sy1 = std::max(sy0 + 1, (y + 1) * height / th);
+        for (int x = 0; x < tw; ++x) {
+            const int sx0 = x * width / tw;
+            const int sx1 = std::max(sx0 + 1, (x + 1) * width / tw);
+            // Box filter, alpha-weighted so transparent pixels don't darken edges.
+            uint64_t r = 0, g = 0, b = 0, a = 0, n = 0;
+            for (int sy = sy0; sy < sy1 && sy < height; ++sy) {
+                for (int sx = sx0; sx < sx1 && sx < width; ++sx) {
+                    const stbi_uc* p = pixels + (static_cast<size_t>(sy) * width + sx) * 4;
+                    r += static_cast<uint64_t>(p[0]) * p[3];
+                    g += static_cast<uint64_t>(p[1]) * p[3];
+                    b += static_cast<uint64_t>(p[2]) * p[3];
+                    a += p[3];
+                    ++n;
+                }
+            }
+            unsigned char* d = &out[(static_cast<size_t>(y + oy) * box + (x + ox)) * 4];
+            if (a > 0) {
+                d[0] = static_cast<unsigned char>(r / a);
+                d[1] = static_cast<unsigned char>(g / a);
+                d[2] = static_cast<unsigned char>(b / a);
+                d[3] = static_cast<unsigned char>(a / std::max<uint64_t>(n, 1));
+            }
+        }
+    }
+    stbi_image_free(pixels);
+    return true;
+}
+
+int UiRenderer::LoadThumbnail(const std::string& path, int box) {
+    std::vector<unsigned char> rgba;
+    if (!DecodeThumbnailRgba(path, box, rgba)) return -1;
+    return UploadTexture(rgba.data(), box, box, "thumb:" + path);
+}
+
+int UiRenderer::CreateTexture(const unsigned char* rgba, int width, int height, const std::string& label) {
+    return UploadTexture(rgba, width, height, label);
+}
+
+bool UiRenderer::UpdateTexture(int handle, const unsigned char* rgba, int width, int height) {
+    if (handle < 0 || handle >= static_cast<int>(icons_.size())) return false;
+    IconTexture& icon = icons_[handle];
+    if (!icon.texture || icon.width != width || icon.height != height) return false;
+    WGPUTexelCopyTextureInfo dst{};
+    dst.texture = icon.texture;
+    dst.mipLevel = 0;
+    dst.origin = WGPUOrigin3D{0, 0, 0};
+    dst.aspect = WGPUTextureAspect_All;
+    WGPUTexelCopyBufferLayout layout{};
+    layout.offset = 0;
+    layout.bytesPerRow = static_cast<uint32_t>(width) * 4;
+    layout.rowsPerImage = static_cast<uint32_t>(height);
+    WGPUExtent3D size{static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
+    wgpuQueueWriteTexture(queue_, &dst, rgba, static_cast<size_t>(width) * height * 4, &layout, &size);
+    return true;
+}
+
+void UiRenderer::ReleaseTexture(int handle) {
+    if (handle < 0 || handle >= static_cast<int>(icons_.size())) return;
+    IconTexture& icon = icons_[handle];
+    if (!icon.texture) return;  // already free
+    if (icon.bind_group) wgpuBindGroupRelease(icon.bind_group);
+    if (icon.view) wgpuTextureViewRelease(icon.view);
+    wgpuTextureRelease(icon.texture);
+    icon = IconTexture{};
+    free_icon_slots_.push_back(handle);
 }
 
 int UiRenderer::LoadIcon(const std::string& path) {
@@ -769,7 +865,7 @@ bool UiRenderer::LoadAnimatedImage(const std::string& path, std::vector<int>& ou
 }
 
 void UiRenderer::DrawImage(float x, float y, float w, float h, int icon, UiColor tint) {
-    if (icon < 0 || icon >= static_cast<int>(icons_.size())) {
+    if (icon < 0 || icon >= static_cast<int>(icons_.size()) || !icons_[icon].bind_group) {
         return;
     }
 
@@ -850,7 +946,8 @@ void UiRenderer::EnsureRoundedRectVertexCapacity(size_t vertex_count) {
     rounded_rect_vertex_buffer_capacity_ = new_capacity;
 }
 
-void UiRenderer::BeginFrame(uint32_t screen_width, uint32_t screen_height) {
+void UiRenderer::BeginFrame(uint32_t screen_width, uint32_t screen_height, float pixel_scale) {
+    pixel_scale_ = pixel_scale >= 1.0f ? pixel_scale : 1.0f;
     vertices_.clear();
     image_draw_calls_.clear();
     rounded_rect_vertices_.clear();
@@ -1011,18 +1108,119 @@ void UiRenderer::DrawRoundedRect(float x, float y, float w, float h, float radiu
     }
 }
 
+namespace {
+
+// One drawable piece of a label, in left-to-right layout order: a plain ASCII
+// character (drawn with the 5x7 pixel font) or a shaped run of other text.
+struct LabelItem {
+    bool ascii = true;
+    char ch = 0;
+    std::shared_ptr<const ShapedRun> run;
+    float width = 6.0f;   // in base pixels, spacing included
+};
+
+char MirrorBracket(char c) {
+    switch (c) {
+        case '(': return ')'; case ')': return '(';
+        case '[': return ']'; case ']': return '[';
+        case '{': return '}'; case '}': return '{';
+        case '<': return '>'; case '>': return '<';
+        default: return c;
+    }
+}
+
+// Lays out text[begin, end) as items. `rtl`: this stretch is right-to-left (an odd
+// bidi level), so its pieces are placed in reverse and its text is shaped RTL.
+void LayoutSegment(const std::string& text, size_t begin, size_t end, bool rtl, std::vector<LabelItem>& out) {
+    std::vector<LabelItem> pieces;
+    for (size_t i = begin; i < end;) {
+        if (static_cast<unsigned char>(text[i]) < 0x80) {
+            LabelItem item;
+            item.ch = rtl ? MirrorBracket(text[i]) : text[i];
+            pieces.push_back(std::move(item));
+            ++i;
+            continue;
+        }
+        // A run of non-ASCII text, including single spaces between its words:
+        // shaped as one unit from system fonts (unicode_font.h).
+        size_t j = i;
+        while (j < end) {
+            if (static_cast<unsigned char>(text[j]) >= 0x80) DecodeUtf8(text, j);
+            else if (text[j] == ' ' && j + 1 < end && static_cast<unsigned char>(text[j + 1]) >= 0x80) ++j;
+            else break;
+        }
+        LabelItem item;
+        item.ascii = false;
+        item.run = ShapeRun(text.substr(i, j - i), rtl ? 2 : 1);
+        item.width = item.run->advance + 1.0f;   // +1: the same 1px gap the bitmap font leaves
+        pieces.push_back(std::move(item));
+        i = j;
+    }
+    if (rtl) std::reverse(pieces.begin(), pieces.end());
+    for (LabelItem& item : pieces) out.push_back(std::move(item));
+}
+
+// Whole label -> items in left-to-right order. Text with no right-to-left
+// characters (the overwhelmingly common case) skips bidi entirely.
+std::vector<LabelItem> LayoutLabel(const std::string& text) {
+    std::vector<LabelItem> items;
+    if (!TextNeedsBidi(text)) {
+        LayoutSegment(text, 0, text.size(), false, items);
+        return items;
+    }
+    const std::vector<BidiRun> runs = BidiResolveRuns(text);
+    for (size_t index : BidiVisualOrder(runs)) {
+        LayoutSegment(text, runs[index].begin, runs[index].end, (runs[index].level & 1) != 0, items);
+    }
+    return items;
+}
+
+}  // namespace
+
 void UiRenderer::DrawLabel(float x, float y, const std::string& text, UiColor color, float pixel_size) {
     float cursor_x = x;
-    for (char raw_ch : text) {
-        char ch = static_cast<char>(std::toupper(static_cast<unsigned char>(raw_ch)));
+    for (const LabelItem& item : LayoutLabel(text)) {
+        if (!item.ascii) {
+            // Shaped text: coverage becomes per-pixel alpha, drawn with the same
+            // rectangles the bitmap font uses; colour emoji bring their own pixels.
+            const float baseline = y + 7.0f * pixel_size;
+            for (const ShapedGlyph& sg : item.run->glyphs) {
+                const UnicodeGlyph* g = sg.glyph;
+                if (!g) continue;
+                if (g->color) {
+                    for (int row = 0; row < g->height; ++row) {
+                        for (int col = 0; col < g->width; ++col) {
+                            const uint8_t* px = &g->rgba[(static_cast<size_t>(row) * g->width + col) * 4];
+                            if (px[3] < 24) continue;
+                            DrawRect(cursor_x + (sg.x + g->xoff + col) * pixel_size,
+                                     baseline + (sg.y + g->yoff + row) * pixel_size, pixel_size, pixel_size,
+                                     UiColor{px[0] / 255.0f, px[1] / 255.0f, px[2] / 255.0f, color.a * px[3] / 255.0f});
+                        }
+                    }
+                    continue;
+                }
+                for (int row = 0; row < g->height; ++row) {
+                    for (int col = 0; col < g->width; ++col) {
+                        const uint8_t a = g->alpha[static_cast<size_t>(row) * g->width + col];
+                        if (a < 40) continue;
+                        UiColor c = color;
+                        c.a *= static_cast<float>(a) / 255.0f;
+                        DrawRect(cursor_x + (sg.x + g->xoff + col) * pixel_size,
+                                 baseline + (sg.y + g->yoff + row) * pixel_size, pixel_size, pixel_size, c);
+                    }
+                }
+            }
+            cursor_x += item.width * pixel_size;
+            continue;
+        }
+        char ch = static_cast<char>(std::toupper(static_cast<unsigned char>(item.ch)));
         const Glyph5x7* glyph = FindGlyph5x7(ch);
         if (glyph) {
             for (int row = 0; row < 7; ++row) {
-                uint8_t row_bits = glyph->rows[row];
+                const uint8_t row_bits = glyph->rows[row];
                 for (int col = 0; col < 5; ++col) {
                     if (row_bits & (0x10 >> col)) {
-                        DrawRect(cursor_x + col * pixel_size, y + row * pixel_size,
-                                 pixel_size, pixel_size, color);
+                        DrawRect(cursor_x + col * pixel_size, y + row * pixel_size, pixel_size, pixel_size, color);
                     }
                 }
             }
@@ -1036,9 +1234,12 @@ float UiRenderer::MeasureText(const std::string& text, float pixel_size) const {
     if (text.empty()) {
         return 0.0f;
     }
-    // 5 glyph columns per char, 1 spacer column between chars (not
-    // after the last one).
-    return static_cast<float>(text.size()) * 6.0f * pixel_size - pixel_size;
+    // ASCII: 5 glyph columns + 1 spacer column per char (the spacer after the
+    // last char isn't counted); shaped runs add their advance + 1. Reordering
+    // by bidi doesn't change the total.
+    float width = 0.0f;
+    for (const LabelItem& item : LayoutLabel(text)) width += item.width;
+    return (width - 1.0f) * pixel_size;
 }
 
 bool UiRenderer::Button(int /*id*/, float x, float y, float w, float h,
@@ -1128,8 +1329,10 @@ void UiRenderer::EndFrame(WGPURenderPassEncoder pass) {
     // scissor state isn't otherwise touched by anything in this file,
     // but leaving it implicit would mean correctness depends on an
     // unstated backend default.
-    wgpuRenderPassEncoderSetScissorRect(pass, 0, 0, static_cast<uint32_t>(screen_width_),
-                                         static_cast<uint32_t>(screen_height_));
+    // Scissor rects are physical pixels; everything else is logical.
+    const uint32_t fb_w = static_cast<uint32_t>(screen_width_ * pixel_scale_ + 0.5f);
+    const uint32_t fb_h = static_cast<uint32_t>(screen_height_ * pixel_scale_ + 0.5f);
+    wgpuRenderPassEncoderSetScissorRect(pass, 0, 0, fb_w, fb_h);
 
     bool pipeline_set = false;
     BatchKind current_kind = BatchKind::kSolid;
@@ -1140,8 +1343,11 @@ void UiRenderer::EndFrame(WGPURenderPassEncoder pass) {
             // current_kind/pipeline_set, so the next kSolid/etc.
             // batch after this one doesn't pay for a redundant
             // pipeline rebind.
-            wgpuRenderPassEncoderSetScissorRect(pass, batch.scissor_x, batch.scissor_y,
-                                                 batch.scissor_w, batch.scissor_h);
+            const uint32_t sx = std::min(fb_w, static_cast<uint32_t>(batch.scissor_x * pixel_scale_));
+            const uint32_t sy = std::min(fb_h, static_cast<uint32_t>(batch.scissor_y * pixel_scale_));
+            const uint32_t sw = std::min(fb_w - sx, static_cast<uint32_t>(batch.scissor_w * pixel_scale_ + 0.5f));
+            const uint32_t sh = std::min(fb_h - sy, static_cast<uint32_t>(batch.scissor_h * pixel_scale_ + 0.5f));
+            wgpuRenderPassEncoderSetScissorRect(pass, sx, sy, sw, sh);
             continue;
         }
 

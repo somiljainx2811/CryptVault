@@ -40,6 +40,12 @@ struct UiAppInput {
     double now_seconds;
     float dt_seconds;
 
+    // Physical pixels per logical unit (framebuffer size / window size):
+    // 1.0 on a normal display, 2.0 on 2x HiDPI. `width`/`height` passed to
+    // UiAppBeginFrame and all mouse coordinates are LOGICAL; this only
+    // tells the renderer how to size scissor rectangles. 0 is treated as 1.
+    float pixel_scale;
+
     // Accumulated vertical scroll wheel delta since the last frame
     // (see main.cpp's on_scroll) - forwarded as-is to UiInput's field
     // of the same name; see that struct for the sign convention.
@@ -77,12 +83,41 @@ struct UiAppInput {
     uint8_t dropped_paths_count;         // how many of dropped_paths[] below are valid
     uint8_t dropped_paths_count_actual;  // how many the OS actually reported (may exceed kMaxDroppedFiles)
     char dropped_paths[kMaxDroppedFiles][kMaxDroppedPathLen];
+
+    // Explorer keyboard support. key_ctrl/key_shift are HELD state; the
+    // rest are one-shot edges: Ctrl+A/C/X/V/F/L (select all, copy, cut,
+    // paste, find, edit path), Delete, F2 (rename).
+    uint8_t key_ctrl;
+    uint8_t key_shift;
+    uint8_t key_delete;
+    uint8_t key_f2;
+    uint8_t key_a;
+    uint8_t key_c;
+    uint8_t key_x;
+    uint8_t key_v;
+    uint8_t key_f;
+    uint8_t key_l;
 };
 
 extern "C" {
 CRYPTVAULT_UI_API UiApp* UiAppCreate(WGPUDevice device, WGPUQueue queue,
                                     WGPUTextureFormat surface_format);
 CRYPTVAULT_UI_API void UiAppDestroy(UiApp* app);
+
+// Optional, call once after UiAppCreate: open the explorer in
+// `start_path` (NULL/empty = $HOME), or start on the restricted vault
+// side when `vault_side` is non-zero. Used for `cryptvault ~/Downloads`
+// and `cryptvault gui --vaults` from a terminal.
+// Esc pressed: closes the topmost popup/prompt/filter if there is one and
+// returns 1; returns 0 when nothing was open (main.cpp then quits).
+CRYPTVAULT_UI_API uint8_t UiAppHandleEscape(UiApp* app);
+
+// Text the UI wants on the system clipboard ("COPY PATH"). Returns 1 and
+// copies it (NUL-terminated, truncated to `capacity`) when a request is
+// pending, else 0. main.cpp hands it to GLFW's clipboard.
+CRYPTVAULT_UI_API uint8_t UiAppConsumeClipboardRequest(UiApp* app, char* out, uint32_t capacity);
+
+CRYPTVAULT_UI_API void UiAppSetStart(UiApp* app, const char* start_path, uint8_t vault_side);
 CRYPTVAULT_UI_API void UiAppBeginFrame(UiApp* app, uint32_t width, uint32_t height,
                                      const UiAppInput* input);
 CRYPTVAULT_UI_API void UiAppEndFrame(UiApp* app, WGPURenderPassEncoder pass);

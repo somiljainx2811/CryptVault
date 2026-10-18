@@ -71,6 +71,18 @@ struct UiInput {
     bool key_enter = false;
     bool key_up = false;
     bool key_down = false;
+    // Modifier state (held) and explorer shortcut edges (one-shot, like
+    // the keys above): Ctrl+A/C/X/V/F/L, Delete, F2.
+    bool key_ctrl = false;
+    bool key_shift = false;
+    bool key_delete = false;
+    bool key_f2 = false;
+    bool key_a = false;
+    bool key_c = false;
+    bool key_x = false;
+    bool key_v = false;
+    bool key_f = false;
+    bool key_l = false;
 
     // Absolute filesystem paths dropped onto the window this frame
     // (see UiAppInput's fixed-size version of the same data, and
@@ -101,7 +113,13 @@ public:
     // Call at the start of each frame, before any Draw*/Button calls.
     // Clears the CPU-side vertex list and records the screen size
     // used to convert pixel coordinates to NDC for this frame.
-    void BeginFrame(uint32_t screen_width, uint32_t screen_height);
+    // `screen_width/height` are the UI's logical size (what all draw
+    // coordinates are expressed in). `pixel_scale` is physical pixels per
+    // logical unit (2.0 on a 2x HiDPI display): vertices are positioned in
+    // normalized device coordinates so they scale to the surface
+    // automatically, but scissor rectangles are in real pixels, so
+    // EndFrame multiplies them by this.
+    void BeginFrame(uint32_t screen_width, uint32_t screen_height, float pixel_scale = 1.0f);
 
     // All coordinates are top-left-origin pixels in the current
     // frame's screen space (see BeginFrame).
@@ -166,6 +184,29 @@ public:
     // that needs it - decoding + GPU upload happens synchronously, so
     // this is meant to be called during app startup, not per-frame.
     int LoadIcon(const std::string& path);
+
+    // Decodes the image at `path` (PNG/JPEG/BMP/GIF/TGA...), scales it down
+    // to fit a `box` x `box` square (aspect ratio kept, transparent
+    // padding) and uploads that as a small texture - for file-explorer
+    // thumbnails. Returns a handle for DrawImage, or -1 if the file isn't a
+    // decodable image or is unreasonably large. Textures live for the
+    // renderer's lifetime (there is no per-texture release), so callers
+    // should cap how many they create.
+    // (Replaced by DecodeThumbnailRgba + CreateTexture so decoding can run
+    // on a worker thread; kept here as a convenience for synchronous use.)
+    int LoadThumbnail(const std::string& path, int box);
+
+    // Texture management for content that changes or comes and goes (file
+    // thumbnails, video preview frames). All of these must be called from
+    // the thread that owns the GPU queue (the UI thread).
+    //   CreateTexture   uploads RGBA8 pixels, returns a DrawImage handle or -1
+    //   UpdateTexture   overwrites a texture's pixels in place (same size) - one
+    //                   cheap queue write per video frame
+    //   ReleaseTexture  frees the GPU resources; the handle may be reused by a
+    //                   later CreateTexture, so drop every copy of it first
+    int CreateTexture(const unsigned char* rgba, int width, int height, const std::string& label);
+    bool UpdateTexture(int handle, const unsigned char* rgba, int width, int height);
+    void ReleaseTexture(int handle);
 
     // Decodes every frame of an animated GIF at `path` and uploads
     // each as its own RGBA8 texture (same underlying representation
@@ -259,7 +300,11 @@ private:
 
     // One decoded icon: its own texture/view/bind-group, created once
     // in LoadIcon and released in ~UiRenderer.
+    std::vector<int> free_icon_slots_;  // released IconTexture slots, reused by UploadTexture
+
     struct IconTexture {
+        int width = 0;
+        int height = 0;
         WGPUTexture texture = nullptr;
         WGPUTextureView view = nullptr;
         WGPUBindGroup bind_group = nullptr;
@@ -363,11 +408,18 @@ private:
     };
     std::vector<ScissorRect> clip_stack_;
 
+    float pixel_scale_ = 1.0f;
     float screen_width_ = 1.0f;
     float screen_height_ = 1.0f;
 
     std::string last_error_;
 };
+
+// CPU-only half of LoadThumbnail, safe to call from any thread: decodes the
+// image, scales it to fit box x box (aspect kept, transparent padding) and
+// returns box*box*4 RGBA bytes. False if it isn't a decodable image or is
+// unreasonably large.
+bool DecodeThumbnailRgba(const std::string& path, int box, std::vector<unsigned char>& rgba);
 
 }  // namespace cryptvault
 

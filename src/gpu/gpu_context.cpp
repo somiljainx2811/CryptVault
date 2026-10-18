@@ -6,16 +6,23 @@
 
 #if defined(_WIN32)
 #define GLFW_EXPOSE_NATIVE_WIN32
-#elif defined(__linux__)
-// GLFW_EXPOSE_NATIVE_X11 works for both a native X11 session and an
-// XWayland one. If you specifically need a native Wayland surface
-// (e.g. GLFW built with -DGLFW_BUILD_WAYLAND=ON and no X11 fallback),
-// swap this for GLFW_EXPOSE_NATIVE_WAYLAND and the matching
-// WGPUSurfaceSourceWaylandSurface block below is already written -
-// just flip which one is `#if 1`.
-#define GLFW_EXPOSE_NATIVE_X11
-#endif
 #include <GLFW/glfw3native.h>
+#elif defined(__linux__)
+// Native-window accessors, declared by hand instead of through
+// <GLFW/glfw3native.h>: that header would make the build require the X11
+// (and Wayland) development headers even though all we need is two
+// opaque pointers per platform. Declared weak so this links against a
+// GLFW built with either backend, both, or only one - a missing symbol is
+// simply null and the other platform is used. (GLFW's own functions
+// report an error and return null when called on the wrong platform, so
+// we check glfwGetPlatform() first.)
+extern "C" {
+void* glfwGetX11Display(void) __attribute__((weak));
+unsigned long glfwGetX11Window(GLFWwindow*) __attribute__((weak));
+void* glfwGetWaylandDisplay(void) __attribute__((weak));
+void* glfwGetWaylandWindow(GLFWwindow*) __attribute__((weak));
+}
+#endif
 
 #include <cstdio>
 #include <cstring>
@@ -210,18 +217,38 @@ bool GpuContext::Create(GLFWwindow* window, uint32_t width, uint32_t height) {
     platform_source.chain.sType = WGPUSType_SurfaceSourceWindowsHWND;
     platform_source.hinstance = GetModuleHandleW(nullptr);
     platform_source.hwnd = glfwGetWin32Window(window);
+    WGPUChainedStruct* platform_chain = &platform_source.chain;
 #elif defined(__linux__)
-    WGPUSurfaceSourceXlibWindow platform_source{};
-    platform_source.chain.next = nullptr;
-    platform_source.chain.sType = WGPUSType_SurfaceSourceXlibWindow;
-    platform_source.display = glfwGetX11Display();
-    platform_source.window = static_cast<uint64_t>(glfwGetX11Window(window));
+    WGPUSurfaceSourceXlibWindow x11_source{};
+    WGPUSurfaceSourceWaylandSurface wayland_source{};
+    WGPUChainedStruct* platform_chain = nullptr;
+    if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
+        if (!glfwGetWaylandDisplay || !glfwGetWaylandWindow) {
+            SetError("GLFW was built without Wayland support");
+            return false;
+        }
+        wayland_source.chain.next = nullptr;
+        wayland_source.chain.sType = WGPUSType_SurfaceSourceWaylandSurface;
+        wayland_source.display = glfwGetWaylandDisplay();
+        wayland_source.surface = glfwGetWaylandWindow(window);
+        platform_chain = &wayland_source.chain;
+    } else {
+        if (!glfwGetX11Display || !glfwGetX11Window) {
+            SetError("GLFW was built without X11 support");
+            return false;
+        }
+        x11_source.chain.next = nullptr;
+        x11_source.chain.sType = WGPUSType_SurfaceSourceXlibWindow;
+        x11_source.display = glfwGetX11Display();
+        x11_source.window = static_cast<uint64_t>(glfwGetX11Window(window));
+        platform_chain = &x11_source.chain;
+    }
 #else
 #error "gpu_context.cpp only implements Windows and Linux surface creation"
 #endif
 
     WGPUSurfaceDescriptor surface_descriptor{};
-    surface_descriptor.nextInChain = reinterpret_cast<WGPUChainedStruct*>(&platform_source);
+    surface_descriptor.nextInChain = platform_chain;
     surface_descriptor.label = ToStringView("CryptVaultSurface");
 
     surface_ = wgpuInstanceCreateSurface(instance_, &surface_descriptor);
