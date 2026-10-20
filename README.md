@@ -91,7 +91,13 @@ The two sides are kept apart on purpose: the explorer never lists, reads or writ
 
 **Trash on every drive:** trashing a file on another mounted drive (USB disk, second SSD, ...) puts it in that drive's own trash (`.Trash-UID`, per the freedesktop spec) - a rename instead of a slow copy to your home drive - and the Trash view / `cryptvault trash list` show everything together.
 
+<<<<<<< HEAD
 **Moving files between CryptVault and other apps:** dragging files *into* CryptVault works. Dragging *out* is not possible - the windowing library (GLFW) cannot start a drag - so use the clipboard instead: Ctrl+C / Ctrl+X also publish the files to the system clipboard, and Ctrl+V pastes files copied in Dolphin, GNOME Files, Thunar and so on. This uses `wl-copy`/`wl-paste` (package `wl-clipboard`) on Wayland or `xclip` on X11; without them copy/paste still works inside CryptVault and you get a one-time hint. The clipboard format follows your desktop (`x-special/gnome-copied-files` for GNOME/XFCE/MATE/Cinnamon, `text/uri-list` for KDE/LXQt; override with `CRYPTVAULT_CLIPBOARD_FORMAT=gnome|uri-list`). COPY PATH (right-click, or Ctrl+Shift+C) puts the paths on the clipboard as plain text.
+=======
+**Drag files out to other apps:** press on a file (or a multi-selection) and pull it out of the window - drop it on Dolphin, GNOME Files, a terminal, a mail composer, ... The target receives the files as `text/uri-list` (plus plain-text paths) and does the copy or move itself. GLFW cannot start a drag, so CryptVault speaks the display server's protocol directly: `wl_data_device.start_drag` on Wayland (on a private event queue and thread of the same connection) and the XDND source protocol on X11 (on a private connection; libX11 is loaded at run time). Both are built when `libwayland-client` / the Xlib headers are present. Dropping back onto CryptVault's own window does nothing. Shift proposes "move" instead of "copy" on X11. Dragging files *into* CryptVault also works.
+
+**Moving files between CryptVault and other apps via the clipboard:** Ctrl+C / Ctrl+X also publish the files to the system clipboard, and Ctrl+V pastes files copied in Dolphin, GNOME Files, Thunar and so on. This uses `wl-copy`/`wl-paste` (package `wl-clipboard`) on Wayland or `xclip` on X11; without them copy/paste still works inside CryptVault and you get a one-time hint. The clipboard format follows your desktop (`x-special/gnome-copied-files` for GNOME/XFCE/MATE/Cinnamon, `text/uri-list` for KDE/LXQt; override with `CRYPTVAULT_CLIPBOARD_FORMAT=gnome|uri-list`). COPY PATH (right-click, or Ctrl+Shift+C) puts the paths on the clipboard as plain text.
+>>>>>>> 409ed34 (Drag n Drop)
 
 ### From the terminal (bash / zsh)
 
@@ -397,7 +403,11 @@ The window picks **native Wayland** when the session is Wayland and **X11** othe
 - Non-ASCII text needs system fonts that cover the script (see above); a script with no installed font draws as a gap. Colour emoji need the CBDT build of Noto Color Emoji (not COLRv1/SVG fonts such as Twemoji). The bidi layout covers the common cases (words, numbers, punctuation, brackets) but not explicit embedding/override/isolate characters or bracket pairing. ASCII stays in the pixel font and is shown in capitals.
 - Video previews need the `ffmpeg` command; the first thumbnail of a long video can take a second or two. Image thumbnails use a 64 px texture, so they look soft on large tiles.
 - Subfolder search is bounded (500 results / ~150k entries visited) and runs in the background, but a search of a huge tree still takes a while to finish.
+<<<<<<< HEAD
 - No drag-out of files to other apps (GLFW can't start a drag) - use the file clipboard or COPY PATH. Pasting files copied in other apps on Wayland relies on `wl-paste`, which hung intermittently on the headless test compositor (sway); copying out and the X11 clipboard were verified, and on a timeout CryptVault falls back to its own clipboard.
+=======
+- Drag-out: on Wayland the drag image is a generic page icon (not a rendering of your selection) and on X11 the pointer keeps its normal cursor during the drag, because the window toolkit owns the cursor. It was verified end to end with a scripted pointer (sway + a virtual pointer, and Xvfb + xdotool) dropping onto separate client windows, including multi-selections and a drop back onto CryptVault itself - not against the real Dolphin/GNOME Files. Pasting files copied in other apps on Wayland relies on `wl-paste`, which hung intermittently on the headless test compositor (sway); copying out and the X11 clipboard were verified, and on a timeout CryptVault falls back to its own clipboard.
+>>>>>>> 409ed34 (Drag n Drop)
 - Fractional display scaling on Wayland works (GLFW 3.4 implements `wp_fractional_scale`; checked at 1.25x, 1.5x, 2x and 2.5x), but only on compositors that offer that protocol - others fall back to integer scaling.
 - Vault files are read fully into memory when added/opened, so very large files need that much RAM.
 - Native Wayland was verified under sway (headless) only; GNOME/KDE sessions have not been tried. Headless Weston crashes inside GLFW 3.4 because it advertises no input seat - a GLFW issue, not CryptVault's.
@@ -407,7 +417,11 @@ The window picks **native Wayland** when the session is Wayland and **X11** othe
 
 ## Testing
 
+<<<<<<< HEAD
 `ctest --test-dir build --output-on-failure` runs three headless suites (no GPU or display needed):
+=======
+`ctest --test-dir build --output-on-failure` runs several headless suites (no GPU or display needed):
+>>>>>>> 409ed34 (Drag n Drop)
 
 - `vault_store` - the encryption engine: create, unlock, folder/file operations, password change, tamper checks.
 - `fs_ops` - the explorer engine: sorting, symlinks, vault detection, copy/move/rename, and the freedesktop Trash (round-tripping odd file names, restore without overwrite), all in a sandboxed `$HOME`.
@@ -426,7 +440,11 @@ The window picks **native Wayland** when the session is Wayland and **X11** othe
 - [x] Complex-script shaping with HarfBuzz (Arabic joining, Indic, Thai, ...) and fractional Wayland scaling
 - [x] Send/receive files via the system clipboard (stand-in for drag-out)
 - [x] Colour emoji (CBDT) and bidirectional layout
+<<<<<<< HEAD
 - [ ] Real drag-and-drop out of the window. Not built on purpose: GLFW cannot start a drag, and doing it ourselves means a second Wayland protocol client (data-device + input serials, impossible to verify without a real compositor session) plus an XDND source for X11 - a large, risky change for something the file clipboard already covers. Revisit if the windowing layer is ever replaced.
+=======
+- [x] Real drag-and-drop out of the window (Wayland data-device and X11 XDND)
+>>>>>>> 409ed34 (Drag n Drop)
 - [ ] Move Argon2id unlock off the UI thread, and raise the cost parameters once it is
 - [ ] Flatpak / AppImage / RPM packaging (needs `--filesystem=host` style access to behave as a file manager)
 - [ ] macOS support for the platform-specific folder picker / open-file code

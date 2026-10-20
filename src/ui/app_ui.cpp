@@ -332,6 +332,12 @@ struct ExplorerState {
     std::vector<cvfs::Entry> all_entries;  // the folder's full listing
     std::vector<char> multi;               // parallel to `entries`: multi-selection (Ctrl/Shift+click)
     int anchor = -1;                       // Shift+click range start
+<<<<<<< HEAD
+=======
+    int press_index = -1;                  // tile the mouse went down on (a drag-out starts if it moves away)
+    float press_x = 0.0f, press_y = 0.0f;
+    bool prev_mouse_down = false;
+>>>>>>> 409ed34 (Drag n Drop)
     std::string filter;                    // live name filter; Enter turns it into a subfolder search
     bool filter_active = false;            // typing goes to the filter box
     bool search_mode = false;              // `entries` are recursive search results
@@ -407,6 +413,12 @@ struct AppState {
     std::vector<std::string> pending_encrypt;
     std::string clipboard_request;               // text for the system clipboard, consumed by main.cpp
     bool has_clipboard_request = false;
+<<<<<<< HEAD
+=======
+    std::vector<std::string> drag_out_paths;     // files the user started dragging out of the window
+    bool has_drag_out_request = false;
+    bool drag_out_active = false;                // an OS-level drag is running (set by main.cpp)
+>>>>>>> 409ed34 (Drag n Drop)
     bool pending_encrypt_delete_armed = false;  // first click on "delete originals" arms it, second confirms
 
     // Current frame's clock, copied from UiAppInput each
@@ -4681,6 +4693,54 @@ void UpdateAndDrawHoverPreview(ContentRenderer& ui, AppState& state, const TileG
     ui.DrawLabel(px + kPad, py + kPad + vh + 4.0f, TruncateToWidth(ui, entry.name, vw), palette::kTextMuted, 1.0f);
 }
 
+<<<<<<< HEAD
+=======
+// Press on a tile and pull: after a few pixels of movement the selected files
+// are handed to the windowing layer as a real drag (see window/drag_out.h), so
+// they can be dropped onto other applications.
+void UpdateDragOutTrigger(AppState& state, const TileGridResult& result) {
+    ExplorerState& ex = state.explorer;
+    const bool down = state.input.mouse_down;
+    const bool pressed = down && !ex.prev_mouse_down;
+    ex.prev_mouse_down = down;
+    if (!down || state.drag_out_active || !ex.keys_enabled || ex.in_trash) {
+        ex.press_index = -1;
+        return;
+    }
+    if (pressed) {
+        const int hit = result.hovered_index;
+        if (std::getenv("CRYPTVAULT_DEBUG")) {
+            std::fprintf(stderr, "[cryptvault] mouse down at (%.0f,%.0f), tile under pointer: %d\n", state.input.mouse_x,
+                         state.input.mouse_y, hit);
+        }
+        ex.press_index = (hit >= 0 && hit < static_cast<int>(ex.entries.size())) ? hit : -1;
+        ex.press_x = state.input.mouse_x;
+        ex.press_y = state.input.mouse_y;
+        return;
+    }
+    if (ex.press_index < 0 || ex.press_index >= static_cast<int>(ex.entries.size())) return;
+    const float dx = state.input.mouse_x - ex.press_x, dy = state.input.mouse_y - ex.press_y;
+    if (dx * dx + dy * dy < 8.0f * 8.0f) return;
+
+    // Dragging a tile that is not part of the selection selects just that tile first.
+    const bool in_selection = ex.selected == ex.press_index
+                              || (ex.press_index < static_cast<int>(ex.multi.size()) && ex.multi[ex.press_index]);
+    if (!in_selection) {
+        std::fill(ex.multi.begin(), ex.multi.end(), 0);
+        ex.selected = ex.press_index;
+        ex.anchor = ex.press_index;
+    }
+    state.drag_out_paths.clear();
+    for (int index : ExplorerSelection(state)) state.drag_out_paths.push_back(ex.entries[index].path);
+    state.has_drag_out_request = !state.drag_out_paths.empty();
+    if (std::getenv("CRYPTVAULT_DEBUG")) {
+        std::fprintf(stderr, "[cryptvault] drag-out requested for %zu item(s), first: %s\n", state.drag_out_paths.size(),
+                     state.drag_out_paths.empty() ? "-" : state.drag_out_paths[0].c_str());
+    }
+    ex.press_index = -1;
+}
+
+>>>>>>> 409ed34 (Drag n Drop)
 void DrawExplorerScreen(ContentRenderer& ui, const Icons& icons, AppState& state) {
     ExplorerState& ex = state.explorer;
     ExplorerInit(state);
@@ -4741,6 +4801,10 @@ void DrawExplorerScreen(ContentRenderer& ui, const Icons& icons, AppState& state
             ex.selected = -1;
         }
     }
+<<<<<<< HEAD
+=======
+    UpdateDragOutTrigger(state, result);
+>>>>>>> 409ed34 (Drag n Drop)
     // Right-clicking a tile that isn't selected selects just it.
     if (state.input.right_clicked && result.right_clicked >= 0 && !ex.multi[result.right_clicked]) {
         std::fill(ex.multi.begin(), ex.multi.end(), 0);
@@ -6502,6 +6566,33 @@ extern "C" CRYPTVAULT_UI_API uint8_t UiAppConsumeClipboardRequest(UiApp* app, ch
     return 1;
 }
 
+<<<<<<< HEAD
+=======
+extern "C" CRYPTVAULT_UI_API uint8_t UiAppConsumeDragOutRequest(UiApp* app, char* out, uint32_t capacity) {
+    if (!app || !out || capacity == 0) return 0;
+    std::lock_guard<std::mutex> lock(app->frame_mutex);
+    if (!app->state.has_drag_out_request) return 0;
+    std::string joined;
+    for (const std::string& p : app->state.drag_out_paths) joined += p + "\n";
+    std::snprintf(out, capacity, "%s", joined.c_str());
+    app->state.has_drag_out_request = false;
+    return 1;
+}
+
+extern "C" CRYPTVAULT_UI_API void UiAppSetDragOutState(UiApp* app, uint8_t active, uint8_t dropped) {
+    if (!app) return;
+    std::lock_guard<std::mutex> lock(app->frame_mutex);
+    const bool was_active = app->state.drag_out_active;
+    app->state.drag_out_active = active != 0;
+    if (was_active && !active) {
+        app->state.explorer.press_index = -1;
+        app->state.explorer.prev_mouse_down = false;
+        app->state.explorer.needs_reload = true;   // a move/delete by the target should show up
+        if (!dropped) app->state.drag_out_paths.clear();
+    }
+}
+
+>>>>>>> 409ed34 (Drag n Drop)
 extern "C" CRYPTVAULT_UI_API uint8_t UiAppHandleEscape(UiApp* app) {
     if (!app) return 0;
     std::lock_guard<std::mutex> lock(app->frame_mutex);

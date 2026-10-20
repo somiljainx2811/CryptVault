@@ -16,7 +16,11 @@ case "$ID_ALL" in
     # loader + Mesa drivers provide the GPU side; xdg-utils/zenity are the
     # "open with default app" / folder picker helpers.
     CMD=(dnf install -y gcc-c++ cmake ninja-build pkgconf-pkg-config libsodium-devel glfw-devel
+<<<<<<< HEAD
          cpp-httplib-devel harfbuzz-devel vulkan-loader mesa-vulkan-drivers xdg-utils zenity) ;;
+=======
+         cpp-httplib-devel harfbuzz-devel wayland-devel libX11-devel vulkan-loader mesa-vulkan-drivers xdg-utils zenity) ;;
+>>>>>>> 409ed34 (Drag n Drop)
   *debian*|*ubuntu*)
     # libglfw3-dev is >= 3.4 on Debian 13+/Ubuntu 24.10+; older releases fall
     # back to building GLFW from source automatically (needs the X11/Wayland
@@ -25,11 +29,19 @@ case "$ID_ALL" in
          libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev wayland-protocols
          libxkbcommon-dev libdecor-0-dev libvulkan1 mesa-vulkan-drivers xdg-utils zenity) ;;
   *arch*)
+<<<<<<< HEAD
     CMD=(pacman -S --needed --noconfirm base-devel cmake ninja libsodium glfw cpp-httplib harfbuzz
          vulkan-icd-loader vulkan-mesa-layers xdg-utils zenity) ;;
   *suse*)
     CMD=(zypper install -y gcc-c++ cmake ninja pkgconf-pkg-config libsodium-devel glfw3-devel
          cpp-httplib-devel harfbuzz-devel libvulkan1 Mesa-vulkan-device-select xdg-utils zenity) ;;
+=======
+    CMD=(pacman -S --needed --noconfirm base-devel cmake ninja libsodium glfw cpp-httplib harfbuzz wayland libx11
+         vulkan-icd-loader vulkan-mesa-layers xdg-utils zenity) ;;
+  *suse*)
+    CMD=(zypper install -y gcc-c++ cmake ninja pkgconf-pkg-config libsodium-devel glfw3-devel
+         cpp-httplib-devel harfbuzz-devel wayland-devel libX11-devel libvulkan1 Mesa-vulkan-device-select xdg-utils zenity) ;;
+>>>>>>> 409ed34 (Drag n Drop)
   *) echo "Unknown distro ('${ID:-?}'). Install: a C++17 compiler, cmake, ninja, libsodium (dev), GLFW >= 3.4," \
           "cpp-httplib, a Vulkan driver, xdg-utils, zenity. Anything missing among the libraries is built" \
           "automatically by CMake." >&2; exit 1 ;;

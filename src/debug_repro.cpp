@@ -52,8 +52,13 @@ int main() {
         std::fprintf(stderr, "UiAppCreate failed\n");
         return 1;
     }
+<<<<<<< HEAD
     UiAppSetStart(app, nullptr, 1); 
     
+=======
+    UiAppSetStart(app, nullptr, 1);  // its scripted input targets the vault side
+
+>>>>>>> 409ed34 (Drag n Drop)
     double t = 0.0;
     auto RunFrame = [&](UiAppInput in) {
         in.now_seconds = t;

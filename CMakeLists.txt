@@ -6,6 +6,11 @@
 # Targets
 #   cryptvault        the app: opens the window, or runs terminal commands
 #                     when given a subcommand (`cryptvault ls`, `cryptvault vault ...`)
+<<<<<<< HEAD
+=======
+#   (Drag-out of files to other apps needs libwayland-client / libX11 development
+#   headers at build time; without them that one feature is left out.)
+>>>>>>> 409ed34 (Drag n Drop)
 #   cryptvault-cli    terminal-only build (libsodium + libstdc++ only: no
 #                     GLFW/GPU/X11 - runs over SSH, in containers, anywhere)
 #   vault_store_test, fs_ops_test   headless unit tests (ctest)
@@ -116,6 +121,13 @@ if(CRYPTVAULT_BUILD_TESTS)
         target_include_directories(bidi_test PRIVATE src)
         add_test(NAME bidi COMMAND bidi_test)
 
+<<<<<<< HEAD
+=======
+        add_executable(drag_out_test src/window/drag_out_test.cpp src/window/drag_out.cpp src/platform/clipboard_files.cpp)
+        target_include_directories(drag_out_test PRIVATE src)
+        add_test(NAME drag_out COMMAND drag_out_test)
+
+>>>>>>> 409ed34 (Drag n Drop)
         add_executable(clipboard_files_test src/platform/clipboard_files_test.cpp src/platform/clipboard_files.cpp)
         target_include_directories(clipboard_files_test PRIVATE src)
         add_test(NAME clipboard_files COMMAND clipboard_files_test)
@@ -314,7 +326,42 @@ else()
     endif()
 
     # app executable ---------------------------------------------------------------------
+<<<<<<< HEAD
     set(CV_UI_SOURCES
+=======
+    # Drag-out backends (optional; each needs its development headers at build time).
+    #   Wayland: libwayland-client (wl_data_device)   X11: libX11 headers (XDND; libX11 itself is loaded at run time)
+    set(CV_DRAG_SOURCES src/window/drag_out.cpp)
+    set(CV_DRAG_LIBS "")
+    set(CV_DRAG_DEFS "")
+    set(CV_DRAG_INCLUDES "")
+    if(UNIX AND NOT APPLE)
+        find_package(PkgConfig QUIET)
+        if(PKG_CONFIG_FOUND)
+            pkg_check_modules(CV_WL_CLIENT QUIET IMPORTED_TARGET wayland-client)
+            if(CV_WL_CLIENT_FOUND)
+                list(APPEND CV_DRAG_SOURCES src/window/wayland_dnd.cpp)
+                list(APPEND CV_DRAG_LIBS PkgConfig::CV_WL_CLIENT)
+                list(APPEND CV_DRAG_DEFS CRYPTVAULT_HAVE_WAYLAND_DND=1)
+                message(STATUS "Drag-out: Wayland backend enabled")
+            else()
+                message(STATUS "Drag-out: Wayland backend disabled (install wayland-devel / libwayland-dev to enable)")
+            endif()
+            pkg_check_modules(CV_X11 QUIET x11)
+            if(CV_X11_FOUND)
+                list(APPEND CV_DRAG_SOURCES src/window/x11_dnd.cpp)
+                list(APPEND CV_DRAG_DEFS CRYPTVAULT_HAVE_X11_DND=1)
+                list(APPEND CV_DRAG_INCLUDES ${CV_X11_INCLUDE_DIRS})
+                message(STATUS "Drag-out: X11 backend enabled")
+            else()
+                message(STATUS "Drag-out: X11 backend disabled (install libX11-devel / libx11-dev to enable)")
+            endif()
+        endif()
+    endif()
+
+    set(CV_UI_SOURCES
+        ${CV_DRAG_SOURCES}
+>>>>>>> 409ed34 (Drag n Drop)
         src/window/window.cpp
         src/gpu/gpu_context.cpp
         src/ui/app_ui.cpp
@@ -331,6 +378,12 @@ else()
     target_include_directories(cryptvault PRIVATE src "${WGPU_NATIVE_DIR}/include/webgpu" "${STB_DIR}")
     target_link_libraries(cryptvault PRIVATE cryptvault_core ${CV_GLFW_TARGET} ${CV_HTTPLIB_TARGET}
                                              ${WGPU_LIBS} Threads::Threads)
+<<<<<<< HEAD
+=======
+    target_link_libraries(cryptvault PRIVATE ${CV_DRAG_LIBS})
+    target_compile_definitions(cryptvault PRIVATE ${CV_DRAG_DEFS})
+    target_include_directories(cryptvault PRIVATE ${CV_DRAG_INCLUDES})
+>>>>>>> 409ed34 (Drag n Drop)
     if(CV_HARFBUZZ_TARGET)
         target_link_libraries(cryptvault PRIVATE ${CV_HARFBUZZ_TARGET})
         target_compile_definitions(cryptvault PRIVATE CRYPTVAULT_HAVE_HARFBUZZ=1)

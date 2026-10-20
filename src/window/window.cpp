@@ -12,8 +12,73 @@ namespace cryptvault {
 
     int g_glfw_ref_count = 0;
 
+<<<<<<< HEAD
     void OnGlfwError(int code, const char* description) {
         std::fprintf(stderr, "[glfw] error %d: %s\n", code, description);
+=======
+void OnGlfwError(int code, const char* description) {
+    std::fprintf(stderr, "[glfw] error %d: %s\n", code, description);
+}
+
+Window* WindowFromGlfw(GLFWwindow* w) {
+    return static_cast<Window*>(glfwGetWindowUserPointer(w));
+}
+
+}  // namespace
+
+Window::Window(const WindowConfig& config) : config_(config) {
+    if (g_glfw_ref_count == 0) {
+        glfwSetErrorCallback(OnGlfwError);
+#if defined(__linux__) && defined(GLFW_PLATFORM_X11)
+        // Native Wayland when the session is Wayland, X11 otherwise (GLFW
+        // >= 3.4 picks automatically and falls back). Override with
+        // CRYPTVAULT_PLATFORM=x11|wayland, e.g. to force XWayland if a
+        // compositor misbehaves.
+        const char* want = std::getenv("CRYPTVAULT_PLATFORM");
+        int platform = GLFW_ANY_PLATFORM;
+        if (want && std::strcmp(want, "x11") == 0) platform = GLFW_PLATFORM_X11;
+        else if (want && std::strcmp(want, "wayland") == 0) platform = GLFW_PLATFORM_WAYLAND;
+        glfwInitHint(GLFW_PLATFORM, platform);
+#endif
+        if (!glfwInit()) {
+            std::fprintf(stderr,
+                         "[cryptvault] couldn't start the window system. On Wayland this needs XWayland "
+                         "(install xorg-x11-server-Xwayland); over SSH use the terminal commands "
+                         "('cryptvault --help').\n");
+        }
+    }
+    ++g_glfw_ref_count;
+}
+
+Window::~Window() {
+    if (window_) {
+        glfwDestroyWindow(window_);
+        window_ = nullptr;
+    }
+    --g_glfw_ref_count;
+    if (g_glfw_ref_count == 0) {
+        glfwTerminate();
+    }
+}
+
+bool Window::Create() {
+    // GpuContext creates its own device/surface via wgpu-native, so
+    // GLFW must not set up a client API (GL/GLES) context on this
+    // window - WGPU owns the surface entirely.
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_RESIZABLE, config_.resizable ? GLFW_TRUE : GLFW_FALSE);
+#if defined(__linux__) && defined(GLFW_PLATFORM_WAYLAND)
+    wayland_ = (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND);
+#endif
+    // Wayland has no client-side window moving via glfwSetWindowPos, so the
+    // custom frameless border can't be dragged there - use decorations.
+    glfwWindowHint(GLFW_DECORATED, (wayland_ || config_.decorated) ? GLFW_TRUE : GLFW_FALSE);
+
+    window_ = glfwCreateWindow(config_.width, config_.height, config_.title.c_str(),
+                                nullptr, nullptr);
+    if (!window_) {
+        return false;
+>>>>>>> 409ed34 (Drag n Drop)
     }
 
     Window* WindowFromGlfw(GLFWwindow* w) {
@@ -130,6 +195,7 @@ namespace cryptvault {
         return true;
     }
 
+<<<<<<< HEAD
     int Window::Run(const std::function<void()>& on_frame) {
         while (!glfwWindowShouldClose(window_)) {
             glfwPollEvents();
@@ -138,6 +204,18 @@ namespace cryptvault {
             }
         }
         return 0;
+=======
+void Window::GetLogicalSize(uint32_t* width, uint32_t* height) const {
+    int w = 0, h = 0;
+    if (window_) glfwGetWindowSize(window_, &w, &h);
+    *width = w > 0 ? static_cast<uint32_t>(w) : 0;
+    *height = h > 0 ? static_cast<uint32_t>(h) : 0;
+}
+
+void Window::SetAlwaysOnTop(bool enabled) {
+    if (window_ && !wayland_) {  // not available to Wayland clients
+        glfwSetWindowAttrib(window_, GLFW_FLOATING, enabled ? GLFW_TRUE : GLFW_FALSE);
+>>>>>>> 409ed34 (Drag n Drop)
     }
 
     void Window::GetFramebufferSize(uint32_t* width, uint32_t* height) const {

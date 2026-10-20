@@ -112,6 +112,18 @@ CRYPTVAULT_UI_API void UiAppDestroy(UiApp* app);
 // returns 1; returns 0 when nothing was open (main.cpp then quits).
 CRYPTVAULT_UI_API uint8_t UiAppHandleEscape(UiApp* app);
 
+<<<<<<< HEAD
+=======
+// Drag-out of files to other applications. When the user pulls selected files
+// out of a tile, the UI queues a request; main.cpp collects it here (paths
+// joined by '\n') and asks the windowing layer to start a real OS drag.
+// Returns 1 and fills `out` when a request is pending.
+CRYPTVAULT_UI_API uint8_t UiAppConsumeDragOutRequest(UiApp* app, char* out, uint32_t capacity);
+// Tells the UI whether a drag-out is in progress (so it ignores the mouse and
+// shows a hint) and, when it ends, whether a target accepted the drop.
+CRYPTVAULT_UI_API void UiAppSetDragOutState(UiApp* app, uint8_t active, uint8_t dropped);
+
+>>>>>>> 409ed34 (Drag n Drop)
 // Text the UI wants on the system clipboard ("COPY PATH"). Returns 1 and
 // copies it (NUL-terminated, truncated to `capacity`) when a request is
 // pending, else 0. main.cpp hands it to GLFW's clipboard.

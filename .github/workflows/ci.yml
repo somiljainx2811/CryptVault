@@ -1,0 +1,27 @@
+# Builds and tests CryptVault inside several distro containers, so "works on
+# Fedora" stays true for the others too. (Written alongside the Wayland work;
+# it has not been run on GitHub yet - the first run may need small fixes.)
+name: ci
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: fedora,   image: "fedora:latest",       pre: "dnf install -y git gcc-c++ cmake ninja-build pkgconf-pkg-config libsodium-devel glfw-devel cpp-httplib-devel libX11-devel wayland-devel bash" }
+          - { name: ubuntu,   image: "ubuntu:24.04",        pre: "apt-get update && apt-get install -y git g++ cmake ninja-build pkg-config libsodium-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev wayland-protocols libxkbcommon-dev ca-certificates curl unzip" }
+          - { name: arch,     image: "archlinux:latest",    pre: "pacman -Syu --noconfirm base-devel git cmake ninja libsodium glfw cpp-httplib wayland libx11" }
+          - { name: opensuse, image: "opensuse/tumbleweed", pre: "zypper install -y git gcc-c++ cmake ninja pkgconf-pkg-config libsodium-devel glfw3-devel cpp-httplib-devel wayland-devel libX11-devel" }
+    steps:
+      - name: Install dependencies
+        run: ${{ matrix.pre }}
+      - uses: actions/checkout@v4
+      - name: Configure (full app)
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build
+      - name: Test (vault engine, explorer engine, terminal end-to-end)
+        run: ctest --test-dir build --output-on-failure
